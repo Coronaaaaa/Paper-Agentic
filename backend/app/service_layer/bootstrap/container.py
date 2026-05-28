@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.agent_layer.runtime.chat_model import ChatModel
+from app.agent_layer.orchestration.tool_loop import ToolRegistry
 from app.data_layer.data_persistence.embedding.embedding_client import EmbeddingClient
 from app.data_layer.data_persistence.chroma_store.vector_index import VectorIndex
 from app.data_layer.data_persistence.chroma_store.keyword_index import KeywordIndex
@@ -75,6 +76,51 @@ class AppContainer:
         from app.service_layer.sse.import_progress_bus import ImportProgressBus
         self.import_progress_bus = ImportProgressBus()
 
+    @property
+    def turn_runner(self) -> "TurnRunner":
+        """构建 TurnRunner 实例（含 ToolRegistry）"""
+        from app.agent_layer.orchestration.turn_runner import TurnRunner
+        from app.agent_layer.planning.retrieval_gate import should_retrieve
+        from app.agent_layer.planning.snapshot_builder import build_snapshot
+        from app.agent_layer.response.block_streamer import stream_to_blocks
+        from app.agent_layer.response.source_mapper import map_sources
+        from app.agent_layer.session.editor_context_store import EditorContextStore
+        from app.agent_layer.session.persistence import SessionPersistence
+        from app.agent_layer.session.window_store import ConversationWindowStore
+
+        window_store = self.conversation_window or ConversationWindowStore(max_messages=20)
+        editor_store = self.editor_context_store or EditorContextStore()
+        persistence = SessionPersistence()
+
+        cache_mode = "unavailable"
+        if self.redis_health.get("status") == "ok":
+            cache_mode = "connected"
+        elif self.conversation_window is not None:
+            cache_mode = "degraded"
+
+        tool_registry = _build_tool_registry(
+            chat_model=self.chat_model,
+            vector_store=self.vector_store,
+            keyword_search=self.keyword_search,
+            embedding_client=self.embedding_client,
+        )
+
+        return TurnRunner(
+            chat_model=self.chat_model,
+            snapshot_builder=build_snapshot,
+            retrieval_gate=should_retrieve,
+            source_mapper=map_sources,
+            block_streamer=stream_to_blocks,
+            window_store=window_store,
+            editor_context_store=editor_store,
+            persistence=persistence,
+            vector_store=self.vector_store,
+            keyword_search=self.keyword_search,
+            embedding_client=self.embedding_client,
+            tool_registry=tool_registry,
+            cache_mode=cache_mode,
+        )
+
     async def initialize(self) -> None:
         self.vector_store.init()
         self.keyword_search.init()
@@ -105,3 +151,54 @@ class AppContainer:
         else:
             overall = "ok"
         return {"status": overall, "components": components}
+
+
+def _build_tool_registry(
+    chat_model: ChatModel,
+    vector_store: VectorIndex,
+    keyword_search: KeywordIndex,
+    embedding_client: EmbeddingClient,
+) -> ToolRegistry:
+    """注册三个内部工具：retrieve、read_anchor、compact_history"""
+    from app.data_layer.retrieval.fusion.rrf_fusion import rrf_fuse
+    from app.agent_layer.hooks.compact import compact_conversation
+
+    registry = ToolRegistry()
+
+    async def _retrieve(args: dict) -> dict:
+        query = args.get("query", "")
+        paper_ids = args.get("paper_ids")
+        dense_results = []
+        sparse_results = []
+        try:
+            qv = await embedding_client.embed_single(query)
+            dense_results = vector_store.query(qv, topk=20, paper_ids=paper_ids)
+        except Exception:
+            pass
+        try:
+            sparse_results = keyword_search.query(query, topk=20, paper_ids=paper_ids)
+        except Exception:
+            pass
+        fused = rrf_fuse(dense_results, sparse_results, topk=10, keyword_index=keyword_search)
+        return [{"id": d.id, "content": d.content, "metadata": d.metadata} for d in fused]
+
+    async def _read_anchor(args: dict) -> dict:
+        anchor_id = args.get("anchor_id", "")
+        paper_id = args.get("paper_id", "")
+        if not anchor_id and not paper_id:
+            return {"error": "需要 anchor_id 或 paper_id"}
+        # 从向量库中按 metadata 过滤
+        results = vector_store.query([0.0] * 1536, topk=1, paper_ids=[paper_id] if paper_id else None)
+        if results:
+            return {"content": results[0].fields.get("content", ""), "metadata": results[0].fields}
+        return {"error": "未找到"}
+
+    async def _compact_history(args: dict) -> dict:
+        messages = args.get("messages", [])
+        summary = await compact_conversation(chat_model, messages)
+        return {"summary": summary}
+
+    registry.register("retrieve", _retrieve)
+    registry.register("read_anchor", _read_anchor)
+    registry.register("compact_history", _compact_history)
+    return registry

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 # 切分约束
 MIN_CHUNK_TOKENS = 128
 MAX_CHUNK_TOKENS = 512
-OVERLAP_TOKENS = MAX_CHUNK_TOKENS // 4  # 超长块重切时的 overlap
+OVERLAP_TOKENS = int(MAX_CHUNK_TOKENS * 0.10)  # 超长块重切时的 overlap（10%）
 SIMILARITY_DROP_THRESHOLD = 0.3  # 相似度下降 30% = 语义边界
 EMBEDDING_WINDOW_SIZE = 3  # 滑动窗口大小
 

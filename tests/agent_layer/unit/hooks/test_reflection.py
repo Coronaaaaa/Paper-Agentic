@@ -7,8 +7,10 @@ import json
 import pytest
 
 from app.agent_layer.hooks.reflection import (
+    EvidenceJudgment,
     ReflectionResult,
     _parse_verdict,
+    judge_evidence,
     reflect,
 )
 
@@ -174,3 +176,63 @@ async def test_reflect_no_context():
     assert result.rounds_used == 1
     # 验证 prompt 中包含"无外部资料"
     assert "无外部资料" in model.call_messages[0][0]["content"]
+
+
+# ── judge_evidence() ───────────────────────────────────────────────
+
+
+class TestJudgeEvidence:
+    @pytest.mark.asyncio
+    async def test_empty_evidence_returns_insufficient(self):
+        """无证据时直接返回 insufficient"""
+        result = await judge_evidence(_MockChatModel([]), "q", "")
+        assert result.verdict == "insufficient"
+        assert "无检索结果" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_supported_verdict(self):
+        model = _MockChatModel([
+            json.dumps({"verdict": "supported", "reason": "证据充分"}),
+        ])
+        result = await judge_evidence(model, "什么是 RAG？", "[1] RAG 是检索增强生成")
+        assert result.verdict == "supported"
+        assert result.reason == "证据充分"
+
+    @pytest.mark.asyncio
+    async def test_insufficient_verdict(self):
+        model = _MockChatModel([
+            json.dumps({"verdict": "insufficient", "reason": "缺少关键信息"}),
+        ])
+        result = await judge_evidence(model, "q", "[1] 部分内容")
+        assert result.verdict == "insufficient"
+
+    @pytest.mark.asyncio
+    async def test_off_track_verdict(self):
+        model = _MockChatModel([
+            json.dumps({"verdict": "off_track", "reason": "证据与问题无关"}),
+        ])
+        result = await judge_evidence(model, "q", "[1] 不相关内容")
+        assert result.verdict == "off_track"
+
+    @pytest.mark.asyncio
+    async def test_invalid_verdict_defaults_supported(self):
+        model = _MockChatModel([
+            json.dumps({"verdict": "maybe", "reason": "模糊"}),
+        ])
+        result = await judge_evidence(model, "q", "[1] 内容")
+        assert result.verdict == "supported"
+
+    @pytest.mark.asyncio
+    async def test_llm_error_defaults_supported(self):
+        class _FailModel:
+            async def chat(self, messages, model=None):
+                raise RuntimeError("LLM down")
+
+        result = await judge_evidence(_FailModel(), "q", "[1] 内容")
+        assert result.verdict == "supported"
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_defaults_supported(self):
+        model = _MockChatModel(["this is not json"])
+        result = await judge_evidence(model, "q", "[1] 内容")
+        assert result.verdict == "supported"

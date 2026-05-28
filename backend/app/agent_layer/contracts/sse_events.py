@@ -81,7 +81,7 @@ class MetadataEvent(BaseModel):
     remaining_ratio: float
     retrieval_planned: bool
     degraded_flags: list[str]
-    redis_mode: str
+    cache_mode: str
 
     def to_sse_frame(self) -> str:
         payload = {
@@ -93,6 +93,6 @@ class MetadataEvent(BaseModel):
             "remaining_ratio": self.remaining_ratio,
             "retrieval_planned": self.retrieval_planned,
             "degraded_flags": self.degraded_flags,
-            "redis_mode": self.redis_mode,
+            "cache_mode": self.cache_mode,
         }
         return f"event: metadata\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"

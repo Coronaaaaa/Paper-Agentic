@@ -105,7 +105,46 @@ def _install_mocks():
         return _RR(output=llm_output, rounds_used=0, direction_switches=0)
 
     reflection_mod.reflect = _fake_reflect
+
+    async def _fake_judge_evidence(chat_model, query, evidence):
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class _EJ:
+            verdict: str
+            reason: str
+
+        return _EJ(verdict="supported", reason="")
+
+    reflection_mod.judge_evidence = _fake_judge_evidence
+
+    from dataclasses import dataclass as _dc, field as _field
+
+    @_dc(frozen=True)
+    class _FakeReflectionResult:
+        output: str
+        rounds_used: int
+        direction_switches: int
+        feedback_log: list = _field(default_factory=list)
+
+    reflection_mod.ReflectionResult = _FakeReflectionResult
     mods["app.agent_layer.hooks.reflection"] = reflection_mod
+
+    # Mock hooks.compact
+    compact_mod = types.ModuleType("app.agent_layer.hooks.compact")
+
+    async def _fake_compact(chat_model, messages, max_summary_tokens=500):
+        return ""
+
+    compact_mod.compact_conversation = _fake_compact
+    mods["app.agent_layer.hooks.compact"] = compact_mod
+
+    # Mock hooks package __init__
+    hooks_mod = types.ModuleType("app.agent_layer.hooks")
+    hooks_mod.compact_conversation = _fake_compact
+    hooks_mod.reflect = _fake_reflect
+    hooks_mod.ReflectionResult = _FakeReflectionResult
+    mods["app.agent_layer.hooks"] = hooks_mod
 
     # Mock orchestration.tool_loop
     tool_loop_mod = types.ModuleType("app.agent_layer.orchestration.tool_loop")
@@ -133,7 +172,9 @@ def _patch_modules():
     targets = [
         "app.agent_layer.contracts.query",
         "app.agent_layer.contracts.sse_events",
+        "app.agent_layer.hooks",
         "app.agent_layer.hooks.reflection",
+        "app.agent_layer.hooks.compact",
         "app.agent_layer.orchestration.tool_loop",
         "app.agent_layer.orchestration.turn_runner",
     ]

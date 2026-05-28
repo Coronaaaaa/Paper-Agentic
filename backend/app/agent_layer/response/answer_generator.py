@@ -1,18 +1,13 @@
-"""回答生成器"""
+"""回答生成器（仅负责回答，不做检索）"""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from pathlib import Path
 
 from app.agent_layer.planning.input_assembler import build_source_label, truncate_snippet
 from app.agent_layer.runtime.chat_model import ChatModel
 from app.data_layer.contracts.conversation import ConversationMessage
-from app.data_layer.retrieval import fusion
-from app.data_layer.data_persistence.chroma_store.keyword_index import KeywordIndex
-from app.data_layer.data_persistence.chroma_store.vector_index import VectorIndex
-from app.service_layer.config.settings import BackendSettings
 
 logger = logging.getLogger("paper-assistant")
 
@@ -28,51 +23,36 @@ _SYSTEM_PROMPT = """你是一个有帮助的助手。请用中文回答用户的
 {context}
 """
 
-_MAX_CONTEXT_TOKENS = 30000
-
 
 class AnswerGenerator:
     def __init__(
         self,
-        settings: BackendSettings,
         chat_model: ChatModel,
-        vector_store: VectorIndex,
-        keyword_search: KeywordIndex,
         conversation_repo: object,
-        embedding_client: object | None = None,
     ):
-        self._settings = settings
         self._chat_model = chat_model
-        self._vector_store = vector_store
-        self._keyword_search = keyword_search
         self._conversation_repo = conversation_repo
-        self._embedding_client = embedding_client
 
     async def generate(
         self,
         session_id: str,
         query_text: str,
-        paper_ids: list[str] | None = None,
+        context: str,
+        sources: list[dict] | None = None,
     ) -> AsyncIterator[dict]:
-        """流式回答，yield SSE 事件"""
+        """流式回答，yield SSE 事件
+
+        Args:
+            session_id: 会话 ID
+            query_text: 用户查询文本
+            context: 预构建的检索上下文（由调用方负责检索和组装）
+            sources: 预构建的来源列表（可选）
+        """
         if not query_text:
             yield {"event": "error", "data": {"message": "请提供问题或内容"}}
             return
 
-        # 1. Dense 检索
-        query_vector: list[float] = []
-        if self._embedding_client is not None:
-            try:
-                query_vector = await self._embedding_client.embed_single(query_text)
-            except Exception as e:
-                logger.warning("Embedding 生成失败，跳过 dense 检索: %s", e)
-
-        # 2. BM25 检索 + RRF 融合
-        dense_results = self._vector_store.query(query_vector, topk=20, paper_ids=paper_ids) if query_vector else []
-        sparse_results = self._keyword_search.query(query_text, topk=20, paper_ids=paper_ids)
-        results = fusion.rrf_fuse(dense_results, sparse_results, topk=10, keyword_index=self._keyword_search)
-
-        if not results:
+        if not context:
             yield {
                 "event": "metadata",
                 "data": {"session_id": session_id, "source_count": 0, "sources": []},
@@ -81,49 +61,9 @@ class AnswerGenerator:
             yield {"event": "done", "data": {}}
             return
 
-        # 3. 拼装上下文
-        context_parts: list[str] = []
-        sources: list[dict] = []
-        total_tokens = 0
+        sources = sources or []
 
-        for doc in results:
-            # 兼容 Doc.fields 和 FusedDoc.metadata
-            if hasattr(doc, "fields") and isinstance(doc.fields, dict):
-                fields = doc.fields
-            elif hasattr(doc, "metadata") and isinstance(doc.metadata, dict):
-                fields = doc.metadata
-            else:
-                fields = {}
-            content = fields.get("content", "") if fields else ""
-            if not content:
-                content = getattr(doc, "content", "")
-
-            tokens = _estimate_tokens(content)
-            if total_tokens + tokens > _MAX_CONTEXT_TOKENS:
-                break
-
-            pid = fields.get("paper_id", "") if fields else ""
-            page = fields.get("source_page", 0) if fields else 0
-            section = fields.get("section_title", "") if fields else ""
-            title = "未命名论文"
-            snippet = truncate_snippet(content)
-            label = build_source_label(title, page if isinstance(page, int) else None, section)
-            source_info = {
-                "id": fields.get("anchor_id", f"{pid}_{fields.get('chunk_index', '')}"),
-                "paper_id": pid,
-                "title": title,
-                "page": page,
-                "section": section,
-                "content": snippet,
-                "citation_label": label,
-            }
-            sources.append(source_info)
-            context_parts.append(f"[{len(sources)}] {label}\n摘录：{snippet}")
-            total_tokens += tokens
-
-        context = "\n\n---\n\n".join(context_parts)
-
-        # 4. 构建消息
+        # 构建消息
         system_msg = _SYSTEM_PROMPT.format(context=context)
         messages = [{"role": "system", "content": system_msg}]
 
@@ -137,7 +77,7 @@ class AnswerGenerator:
 
         messages.append({"role": "user", "content": query_text})
 
-        # 5. 发送 metadata + 流式 chunk
+        # 发送 metadata + 流式 chunk
         yield {
             "event": "metadata",
             "data": {
@@ -156,7 +96,7 @@ class AnswerGenerator:
             logger.error("LLM 流式调用失败: %s", e)
             yield {"event": "error", "data": {"message": "LLM 服务暂时不可用"}}
 
-        # 6. 保存对话历史
+        # 保存对话历史
         if full_response:
             from app.data_layer.contracts.library_item import utc_now_iso
             now = utc_now_iso()
@@ -183,10 +123,3 @@ class AnswerGenerator:
         fallback = first_message[:20]
         response = await self._chat_model.chat([{"role": "user", "content": prompt}])
         return sanitize_title(response, fallback)
-
-
-def _estimate_tokens(text: str) -> int:
-    count = 0.0
-    for ch in text:
-        count += 1.5 if "一" <= ch <= "鿿" else 0.75
-    return int(count)

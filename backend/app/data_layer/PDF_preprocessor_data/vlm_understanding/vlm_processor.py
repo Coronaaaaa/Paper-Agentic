@@ -76,7 +76,7 @@ class VLMProcessor:
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://api.coro0.top/v1",
+        base_url: str,
         model: str = "qwen3-vl:235b",
         max_retries: int = 3,
         base_delay_ms: int = 1000,

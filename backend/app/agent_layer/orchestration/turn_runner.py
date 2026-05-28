@@ -21,7 +21,9 @@ from app.agent_layer.contracts.sse_events import (
     ThinkingEvent,
 )
 from app.agent_layer.runtime.token_budget import estimate_tokens
-from app.agent_layer.hooks.reflection import reflect
+from app.data_layer.retrieval.fusion.rrf_fusion import rrf_fuse
+from app.agent_layer.hooks.compact import compact_conversation
+from app.agent_layer.hooks.reflection import reflect, judge_evidence
 from app.agent_layer.orchestration.tool_loop import (
     ToolLoopEvent,
     ToolRegistry,
@@ -82,7 +84,7 @@ class TurnRunner:
         keyword_search: Any | None = None,
         embedding_client: Any | None = None,
         tool_registry: ToolRegistry | None = None,
-        redis_mode: str = "unavailable",
+        cache_mode: str = "unavailable",
     ) -> None:
         self._chat_model = chat_model
         self._snapshot_builder = snapshot_builder
@@ -96,7 +98,7 @@ class TurnRunner:
         self._keyword_search = keyword_search
         self._embedding_client = embedding_client
         self._tool_registry = tool_registry
-        self._redis_mode = redis_mode
+        self._cache_mode = cache_mode
 
     async def run(self, request: AskRequest) -> AsyncIterator[str]:
         request_id = uuid.uuid4().hex
@@ -128,6 +130,24 @@ class TurnRunner:
             remaining_tokens = max(0, max_context - context_tokens)
             remaining_ratio = remaining_tokens / max_context if max_context > 0 else 0.0
 
+            # ── Compact：剩余空间不足时压缩历史 ──
+            if remaining_ratio < 0.05 and snapshot.recent_window:
+                summary = await compact_conversation(
+                    self._chat_model, snapshot.recent_window
+                )
+                if summary:
+                    snapshot.history_summary = summary
+                    snapshot.recent_window = []
+                    # 重新计算 token 用量
+                    context_tokens = estimate_tokens(
+                        (snapshot.prompt or "")
+                        + (snapshot.selection or "")
+                        + (snapshot.written_context or "")
+                        + (snapshot.history_summary or "")
+                    )
+                    remaining_tokens = max(0, max_context - context_tokens)
+                    remaining_ratio = remaining_tokens / max_context if max_context > 0 else 0.0
+
             yield MetadataEvent(
                 request_id=snapshot.request_id,
                 session_id=snapshot.session_id,
@@ -137,21 +157,48 @@ class TurnRunner:
                 remaining_ratio=round(remaining_ratio, 4),
                 retrieval_planned=snapshot.enable_rag,
                 degraded_flags=degraded_flags,
-                redis_mode=self._redis_mode,
+                cache_mode=self._cache_mode,
             ).to_sse_frame()
 
             query_text = self._assemble_query(snapshot)
 
             need_rag = self._retrieval_gate(snapshot)
 
-            if need_rag:
-                retrieval_results = await self._retrieve(query_text, snapshot.paper_ids)
-                sources = self._source_mapper(retrieval_results)
-            else:
-                retrieval_results = []
-                sources = []
+            retrieval_results: list[dict] = []
+            sources: list = []
+            context = ""
 
-            context = self._build_context(retrieval_results)
+            if need_rag:
+                max_reflection_rounds = 3
+                max_direction_switches = 2
+                direction_switches = 0
+                current_query = query_text
+
+                for round_num in range(1, max_reflection_rounds + 1):
+                    retrieval_results = await self._retrieve(current_query, snapshot.paper_ids)
+                    sources = self._source_mapper(retrieval_results)
+                    context = self._build_context(retrieval_results)
+
+                    if not snapshot.reflection_enabled or not context:
+                        break
+
+                    judgment = await judge_evidence(self._chat_model, current_query, context)
+                    yield ReflectionEvent(
+                        round=round_num,
+                        verdict=judgment.verdict,
+                        reason=judgment.reason,
+                    ).to_sse_frame()
+
+                    if judgment.verdict == "supported":
+                        break
+
+                    if judgment.verdict == "off_track":
+                        direction_switches += 1
+                        if direction_switches >= max_direction_switches:
+                            break
+                        # 用 reason 作为补充关键词重新检索
+                        current_query = f"{query_text} {judgment.reason}"
+                    # "insufficient": 用原查询再试一次（下一轮会重新检索）
 
             messages = self._build_messages(snapshot, context)
 
@@ -221,24 +268,39 @@ class TurnRunner:
         return "\n\n".join(text for _, text in parts)
 
     async def _retrieve(self, query_text: str, paper_ids: list[str] | None) -> list[dict]:
-        results: list[dict] = []
+        dense_results = []
+        sparse_results = []
 
         if self._embedding_client is not None and self._vector_store is not None:
             try:
                 query_vector = await self._embedding_client.embed_single(query_text)
                 dense_results = self._vector_store.query(query_vector, topk=20, paper_ids=paper_ids)
-                results.extend(dense_results)
             except Exception as exc:
                 logger.warning("Dense retrieval failed: %s", exc)
 
         if self._keyword_search is not None:
             try:
                 sparse_results = self._keyword_search.query(query_text, topk=20, paper_ids=paper_ids)
-                results.extend(sparse_results)
             except Exception as exc:
                 logger.warning("Keyword retrieval failed: %s", exc)
 
-        return results
+        if not dense_results and not sparse_results:
+            return []
+
+        fused = rrf_fuse(dense_results, sparse_results, topk=10, keyword_index=self._keyword_search)
+        return [
+            {
+                "content": doc.content,
+                "paper_id": doc.metadata.get("paper_id", ""),
+                "chunk_id": doc.metadata.get("chunk_id", doc.id),
+                "title": doc.metadata.get("section_title", ""),
+                "page": doc.metadata.get("source_page"),
+                "section": doc.metadata.get("section_title", ""),
+                "anchor_id": doc.metadata.get("anchor_id", ""),
+                "chunk_index": doc.metadata.get("chunk_index"),
+            }
+            for doc in fused
+        ]
 
     def _build_context(self, retrieval_results: list[dict]) -> str:
         if not retrieval_results:

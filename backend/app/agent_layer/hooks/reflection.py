@@ -30,6 +30,16 @@ _CONTEXT_SECTION = """参考资料：
 
 _NO_CONTEXT_SECTION = "（无外部资料，基于常识回答）"
 
+_EVIDENCE_JUDGE_PROMPT = """你是一个学术证据审查员。请判断以下资料是否足以回答用户的问题。
+
+用户提问：{query}
+
+检索到的资料：
+{evidence}
+
+请严格按以下 JSON 格式回复，不要添加其他内容：
+{{"verdict": "supported" 或 "insufficient" 或 "off_track", "reason": "简要原因"}}"""
+
 _MAX_ROUNDS = 3
 _MAX_SWITCHES = 2
 
@@ -40,6 +50,12 @@ class ReflectionResult:
     rounds_used: int
     direction_switches: int
     feedback_log: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class EvidenceJudgment:
+    verdict: str  # "supported" | "insufficient" | "off_track"
+    reason: str
 
 
 def _parse_verdict(raw: str) -> tuple[str, str, str]:
@@ -65,6 +81,48 @@ def _parse_verdict(raw: str) -> tuple[str, str, str]:
         if "supported" in cleaned.lower() and "unsupported" not in cleaned.lower():
             return "supported", cleaned, "refine"
         return "unsupported", cleaned, "refine"
+
+
+async def judge_evidence(
+    chat_model: ChatModel,
+    query: str,
+    evidence: str,
+) -> EvidenceJudgment:
+    """判断检索到的证据是否足以回答查询。
+
+    Args:
+        chat_model: LLM 客户端
+        query: 用户查询
+        evidence: 检索到的证据文本
+
+    Returns:
+        EvidenceJudgment 包含 verdict 和 reason
+    """
+    if not evidence:
+        return EvidenceJudgment(verdict="insufficient", reason="无检索结果")
+
+    prompt = _EVIDENCE_JUDGE_PROMPT.format(query=query, evidence=evidence)
+    try:
+        raw = await chat_model.chat([{"role": "user", "content": prompt}])
+    except Exception as exc:
+        logger.warning("Evidence judgment failed: %s", exc)
+        return EvidenceJudgment(verdict="supported", reason="判断失败，默认通过")
+
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+    import json as _json
+    try:
+        data = _json.loads(cleaned)
+        verdict = str(data.get("verdict", "supported")).lower()
+        reason = str(data.get("reason", ""))
+        if verdict not in ("supported", "insufficient", "off_track"):
+            verdict = "supported"
+        return EvidenceJudgment(verdict=verdict, reason=reason)
+    except (_json.JSONDecodeError, ValueError):
+        return EvidenceJudgment(verdict="supported", reason="解析失败，默认通过")
 
 
 async def reflect(

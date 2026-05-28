@@ -15,10 +15,12 @@ from app.agent_layer.contracts.sse_events import (
     BlockEvent,
     DoneEvent,
     ErrorEvent,
+    MetadataEvent,
     ReflectionEvent,
     SourcesEvent,
     ThinkingEvent,
 )
+from app.agent_layer.runtime.token_budget import estimate_tokens
 from app.agent_layer.hooks.reflection import reflect
 from app.agent_layer.orchestration.tool_loop import (
     ToolLoopEvent,
@@ -80,6 +82,7 @@ class TurnRunner:
         keyword_search: Any | None = None,
         embedding_client: Any | None = None,
         tool_registry: ToolRegistry | None = None,
+        redis_mode: str = "unavailable",
     ) -> None:
         self._chat_model = chat_model
         self._snapshot_builder = snapshot_builder
@@ -93,6 +96,7 @@ class TurnRunner:
         self._keyword_search = keyword_search
         self._embedding_client = embedding_client
         self._tool_registry = tool_registry
+        self._redis_mode = redis_mode
 
     async def run(self, request: AskRequest) -> AsyncIterator[str]:
         request_id = uuid.uuid4().hex
@@ -103,6 +107,35 @@ class TurnRunner:
                 return
 
             snapshot = await self._freeze_snapshot(request, request_id)
+
+            # ── Metadata 事件：首个 SSE 帧，报告输入源和 token 预算 ──
+            degraded_flags: list[str] = []
+            if self._editor_context_store is None:
+                degraded_flags.append("editor_context_unavailable")
+            if self._window_store is None:
+                degraded_flags.append("window_store_unavailable")
+
+            context_tokens = estimate_tokens(
+                (snapshot.prompt or "")
+                + (snapshot.selection or "")
+                + (snapshot.written_context or "")
+                + (snapshot.history_summary or "")
+            )
+            max_context = self._chat_model.max_context_tokens if hasattr(self._chat_model, "max_context_tokens") else 30000
+            remaining_tokens = max(0, max_context - context_tokens)
+            remaining_ratio = remaining_tokens / max_context if max_context > 0 else 0.0
+
+            yield MetadataEvent(
+                request_id=snapshot.request_id,
+                session_id=snapshot.session_id,
+                used_inputs=snapshot.used_inputs.model_dump(),
+                context_tokens=context_tokens,
+                remaining_tokens=remaining_tokens,
+                remaining_ratio=round(remaining_ratio, 4),
+                retrieval_planned=snapshot.enable_rag,
+                degraded_flags=degraded_flags,
+                redis_mode=self._redis_mode,
+            ).to_sse_frame()
 
             query_text = self._assemble_query(snapshot)
 

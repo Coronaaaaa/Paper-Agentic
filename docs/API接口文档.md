@@ -235,6 +235,41 @@ data: {"status": "done", "step": null, "paper_id": null}
 
 获取当前选中文本。
 
+### `POST /assistant/polling/start`
+
+启动编辑器上下文轮询（后端主动拉取模式）。
+
+**请求体**:
+```json
+{
+  "session_id": "xxx",
+  "interval": 5
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `session_id` | string | 是 | 目标会话 ID |
+| `interval` | int | 否 | 轮询间隔（秒），默认 5，范围 1-60 |
+
+**响应**:
+```json
+{"status": "ok", "message": "轮询已启动，间隔 5s"}
+```
+
+**错误**: 503 编辑器上下文存储不可用
+
+### `POST /assistant/polling/stop`
+
+停止编辑器上下文轮询。
+
+**响应**:
+```json
+{"status": "ok", "message": "轮询已停止"}
+```
+
+**错误**: 503 编辑器上下文存储不可用
+
 ---
 
 ## 查询接口
@@ -293,6 +328,25 @@ data: {"status": "done", "step": null, "paper_id": null}
 ## SSE 事件格式
 
 `POST /query` 返回 `text/event-stream`，事件类型：
+
+### `metadata` — 请求元信息（首个事件）
+
+```
+event: metadata
+data: {"request_id": "abc123", "session_id": "xxx", "used_inputs": {"prompt": 1.0, "selection": 0.0, "written_context": 0.0}, "context_tokens": 150, "remaining_tokens": 31850, "remaining_ratio": 0.9953, "retrieval_planned": true, "degraded_flags": [], "redis_mode": "unavailable"}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `request_id` | 请求唯一 ID |
+| `session_id` | 会话 ID |
+| `used_inputs` | 各输入源权重（prompt / selection / written_context） |
+| `context_tokens` | 输入上下文估算 token 数 |
+| `remaining_tokens` | 剩余可用 token |
+| `remaining_ratio` | 剩余比例（0-1） |
+| `retrieval_planned` | 是否计划检索 |
+| `degraded_flags` | 降级标志列表 |
+| `redis_mode` | Redis 状态（connected / degraded / unavailable） |
 
 ### `thinking` — 思考过程
 

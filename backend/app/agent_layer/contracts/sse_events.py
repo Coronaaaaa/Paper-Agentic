@@ -69,3 +69,30 @@ class ReflectionEvent(BaseModel):
     def to_sse_frame(self) -> str:
         payload = {"round": self.round, "verdict": self.verdict, "reason": self.reason}
         return f"event: reflection\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+class MetadataEvent(BaseModel):
+    event: Literal["metadata"] = "metadata"
+    request_id: str
+    session_id: str
+    used_inputs: dict
+    context_tokens: int
+    remaining_tokens: int
+    remaining_ratio: float
+    retrieval_planned: bool
+    degraded_flags: list[str]
+    redis_mode: str
+
+    def to_sse_frame(self) -> str:
+        payload = {
+            "request_id": self.request_id,
+            "session_id": self.session_id,
+            "used_inputs": self.used_inputs,
+            "context_tokens": self.context_tokens,
+            "remaining_tokens": self.remaining_tokens,
+            "remaining_ratio": self.remaining_ratio,
+            "retrieval_planned": self.retrieval_planned,
+            "degraded_flags": self.degraded_flags,
+            "redis_mode": self.redis_mode,
+        }
+        return f"event: metadata\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"

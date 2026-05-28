@@ -191,3 +191,57 @@ class TestChunkU03:
         for fc in figure_chunks:
             child_anchors = [a for a in fc.anchors if a.parent_anchor_id]
             assert len(child_anchors) >= 1
+
+
+class TestChunkU04:
+    """parent_chunk_id 父子块关系"""
+
+    def test_normal_chunks_have_empty_parent_chunk_id(self):
+        """正常切分的 chunk 的 parent_chunk_id 为空"""
+        text = "这是一段普通的测试文本。包含几个句子。用于验证切分逻辑。"
+        chunks = semantic_chunk(text)
+        for chunk in chunks:
+            assert chunk.parent_chunk_id == ""
+
+    def test_oversized_rechunked_has_parent_chunk_id(self):
+        """超长块重切后的子块应有 parent_chunk_id 指向原父块"""
+        # 生成超长文本（远超 MAX_CHUNK_TOKENS）
+        text = "这是一个很长的句子，用于测试超长块重切逻辑。" * 500
+        chunks = semantic_chunk(text)
+
+        # 应该有子块被重切
+        child_chunks = [c for c in chunks if c.parent_chunk_id]
+        assert len(child_chunks) > 0, "应该有重切产生的子块"
+
+        # parent_chunk_id 应该是有效的 chunk_id 格式
+        for child in child_chunks:
+            assert child.parent_chunk_id.startswith("chunk_")
+
+    def test_rechunked_children_share_same_parent(self):
+        """同一超长块重切出的多个子块应共享同一个 parent_chunk_id"""
+        text = "这是一段超长文本。" * 1000
+        chunks = semantic_chunk(text)
+
+        # 按 parent_chunk_id 分组
+        parent_groups: dict[str, list] = {}
+        for c in chunks:
+            if c.parent_chunk_id:
+                parent_groups.setdefault(c.parent_chunk_id, []).append(c)
+
+        # 应该至少有一个父块产生了子块
+        assert len(parent_groups) >= 1, "应该至少有一个父块被重切"
+
+        # 同组子块共享同一 parent_chunk_id
+        for parent_id, children in parent_groups.items():
+            assert all(c.parent_chunk_id == parent_id for c in children)
+
+    def test_rechunked_anchor_has_parent_anchor_id(self):
+        """重切子块的 anchor 应有 parent_anchor_id"""
+        text = "超长文本重切测试。" * 500
+        chunks = semantic_chunk(text)
+
+        child_chunks = [c for c in chunks if c.parent_chunk_id]
+        for child in child_chunks:
+            # 子块的 anchor 应有 parent_anchor_id
+            assert child.anchors[0].parent_anchor_id != "", \
+                f"chunk {child.chunk_id} 的 anchor 缺少 parent_anchor_id"

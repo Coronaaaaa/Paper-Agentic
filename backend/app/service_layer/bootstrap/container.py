@@ -71,6 +71,10 @@ class AppContainer:
         self.library_repo = SQLiteLibraryRepo(db_path)
         self.import_task_repo = SQLiteImportTaskRepo(db_path)
 
+        # ── 导入进度总线 ──
+        from app.service_layer.sse.import_progress_bus import ImportProgressBus
+        self.import_progress_bus = ImportProgressBus()
+
     async def initialize(self) -> None:
         self.vector_store.init()
         self.keyword_search.init()

@@ -5,46 +5,46 @@
 ```
 tests/
 ├── conftest.py              # 根配置（sys.path）
-├── .gitignore               # 忽略 output/
+├── .gitignore               # 排除 output/ fixtures/ _artifacts/ __pycache__/
 │
 ├── unit/                    # 单元测试（纯逻辑，无外部依赖）
-│   └── data_layer/          # 数据层单元测试
-│       ├── conftest.py      # 共享 fixtures（tmp_dir, zh_pdf, en_pdf）
-│       ├── cleaning/
-│       ├── chunking/
-│       ├── probe/
-│       ├── config_embedding/
-│       ├── file_management/
-│       ├── preprocessor_monitor/
-│       ├── retrieval/
-│       ├── transfer/
-│       ├── transformation/
-│       ├── vlm_understanding/
-│       └── chroma_store/
+│   ├── agent_layer/         # Agent 层单测
+│   │   ├── contracts/       # 数据契约测试
+│   │   ├── orchestration/   # 编排测试
+│   │   ├── planning/        # 规划测试
+│   │   ├── response/        # 回答生成测试
+│   │   ├── runtime/         # 运行时测试
+│   │   └── session/         # 会话测试
+│   │
+│   ├── data_layer/          # 数据层单测
+│   │   ├── conftest.py      # 共享 fixtures（tmp_dir, zh_pdf, en_pdf）
+│   │   ├── chroma_store/    # 向量库 + BM25 测试
+│   │   ├── chunking/        # 语义切分测试
+│   │   ├── cleaning/        # 清洗测试
+│   │   ├── config_embedding/ # 配置 + embedding 测试
+│   │   ├── document_service/ # 文档服务测试
+│   │   ├── file_management/  # 文件管理测试
+│   │   ├── preprocessor_monitor/ # 监控测试
+│   │   ├── probe/           # 探针测试
+│   │   ├── retrieval/       # 检索测试
+│   │   ├── transfer/        # 路由调度测试
+│   │   ├── transformation/  # 转换测试
+│   │   └── vlm_understanding/ # VLM 测试
+│   │
+│   └── service_layer/       # 服务层单测
 │
 ├── integration/             # 集成测试（需真实 API / 文件）
 │   └── data_layer/
-│       ├── test_mineru_json_analysis.py    # MinerU JSON 元数据分析（中英文）
-│       ├── test_mineru_comparison.py       # MinerU 解析对比
-│       └── test_real_api.py                # 真实 API 测试
+│       ├── test_mineru_*.py          # MinerU 解析相关
+│       └── test_real_api.py          # 真实 API 测试
 │
-├── fixtures/                # 测试输入（只读，不修改）
-│   ├── pdfs_zh/             # 中文 PDF 样本
-│   └── pdfs_en/             # 英文 PDF 样本
+├── fixtures/                # 测试输入（只读，不修改，不入库）
+│   ├── pdfs_zh/             # 中文 PDF 样本（自行准备）
+│   ├── pdfs_en/             # 英文 PDF 样本（自行准备）
+│   └── README.md
 │
 └── output/                  # 测试产出（.gitignore，不入库）
     └── mineru_json_analysis/
-        ├── zh/              # 中文 PDF 解析结果
-        │   ├── <tag>/
-        │   │   ├── full.md
-        │   │   ├── content_list.json
-        │   │   ├── model.json
-        │   │   └── layout.json
-        │   └── ...
-        └── en/              # 英文 PDF 解析结果
-            ├── <tag>/
-            │   └── ...
-            └── ...
 ```
 
 ## 分类原则
@@ -81,14 +81,16 @@ uv run pytest tests/ -v
 
 ## PDF 样本
 
-- `fixtures/pdfs_zh/` — 中文论文（政策文件、学术论文、技术研究）
+- `fixtures/pdfs_zh/` — 中文论文
 - `fixtures/pdfs_en/` — 英文论文
-- 这些文件是只读的，不要修改或删除
+- 这些文件不入库，自行准备
 - 新增样本直接放入对应目录即可
 
-## 注意事项
+## 不入库的内容
 
-- 不要在 tests/ 根目录散落测试文件
-- 不要把测试产出提交到 git（output/ 已 gitignore）
-- 集成测试需要真实 API key，CI 环境可能跳过
-- 旧测试代码已归档至 `_archive/02-旧数据/backend_tests_legacy/`
+| 目录/文件 | 原因 |
+|-----------|------|
+| `fixtures/pdfs_*/` | PDF 体积大（500MB+），自行准备 |
+| `output/` | MinerU 解析产物，运行时生成 |
+| `_artifacts/` | soak reports、fault logs，运行时产物 |
+| `__pycache__/` | Python 字节码 |

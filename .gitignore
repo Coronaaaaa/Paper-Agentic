@@ -120,10 +120,8 @@ desktop.ini
 conversation_continuity_results.json
 rag_quality_with_content.json
 datasets/test_meta_papers/
-
-# 测试 PDF 数据（自备，不入版本控制）
-backend/tests/fixtures/pdfs_en/*.pdf
-backend/tests/fixtures/pdfs_zh/*.pdf
+datasets/中文文献-测试-PDF/
+datasets/外文文献-测试-PDF/
 
 # ========================================
 # WPS 调试文件

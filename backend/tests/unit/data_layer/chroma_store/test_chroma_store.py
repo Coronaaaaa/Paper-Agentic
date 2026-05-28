@@ -322,3 +322,51 @@ class TestStoreI04:
         assert index.stats["doc_count"] == 0
 
         index.close()
+
+
+class TestStoreU04:
+    """parent_chunk_id 存储"""
+
+    def test_vector_stores_parent_chunk_id(self, tmp_dir):
+        """VectorIndex 存储并返回 parent_chunk_id"""
+        index = VectorIndex(path=str(tmp_dir / "chroma"), dimension=128)
+        index.init()
+
+        chunks = [
+            {"content": "父块内容", "chunk_type": "paragraph", "parent_chunk_id": ""},
+            {"content": "子块1内容", "chunk_type": "paragraph", "parent_chunk_id": "chunk_0000"},
+            {"content": "子块2内容", "chunk_type": "paragraph", "parent_chunk_id": "chunk_0000"},
+        ]
+        vectors = [[0.1] * 128, [0.2] * 128, [0.3] * 128]
+        index.insert_chunks("paper1", chunks, vectors)
+
+        # 查询所有
+        results = index.query(vector=[0.1] * 128, topk=3)
+        assert len(results) == 3
+
+        # 检查 parent_chunk_id 字段
+        parent_ids = {doc.fields.get("parent_chunk_id", "") for doc in results}
+        assert "" in parent_ids  # 父块
+        assert "chunk_0000" in parent_ids  # 子块
+
+        index.close()
+
+    def test_bm25_stores_parent_chunk_id(self, tmp_dir):
+        """KeywordIndex 存储并返回 parent_chunk_id"""
+        index = KeywordIndex(index_dir=str(tmp_dir / "bm25"))
+        index.init()
+
+        index.add_documents(
+            ["paper1_0", "paper1_1"],
+            ["父块内容", "子块内容"],
+            metadatas=[
+                {"paper_id": "paper1", "parent_chunk_id": ""},
+                {"paper_id": "paper1", "parent_chunk_id": "chunk_0000"},
+            ],
+        )
+
+        meta0 = index.get_metadata("paper1_0")
+        assert meta0["parent_chunk_id"] == ""
+
+        meta1 = index.get_metadata("paper1_1")
+        assert meta1["parent_chunk_id"] == "chunk_0000"

@@ -57,6 +57,7 @@ class DocumentIngestService:
         self,
         file_path: Path,
         paper_id: str | None = None,
+        pipeline_orchestrator=None,
     ) -> IngestResult:
         """完整闭环导入文档
 
@@ -101,13 +102,15 @@ class DocumentIngestService:
             logs.append(_log("info", f"文件已复制: {stored_path}"))
 
             # 2. 运行 Pipeline
-            from ..PDF_preprocessor_data.transfer.pipeline import PipelineOrchestrator
-
-            orchestrator = PipelineOrchestrator(
-                embedding_client=self._embedding_client,
-                vector_index=self._vector_index,
-                keyword_index=self._keyword_index,
-            )
+            if pipeline_orchestrator is not None:
+                orchestrator = pipeline_orchestrator
+            else:
+                from ..PDF_preprocessor_data.transfer.pipeline import PipelineOrchestrator
+                orchestrator = PipelineOrchestrator(
+                    embedding_client=self._embedding_client,
+                    vector_index=self._vector_index,
+                    keyword_index=self._keyword_index,
+                )
             state = await orchestrator.run(stored_path, output_dir=paths.images_dir)
             logs.extend([
                 _log("info", f"Pipeline 完成: stage={state.stage.value}", stage=state.stage.value)

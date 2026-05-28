@@ -130,3 +130,44 @@ class TestTransE:
         assert result.success is True
         assert result.metadata.get("degraded") is True
         assert result.metadata.get("degrade_reason") == "scan_like_ocr_unavailable"
+
+
+class TestTransDocx:
+    """DOCX 多格式支持"""
+
+    def test_mineru_adapter_accepts_docx_suffix(self):
+        """mineru_adapter 不拒绝 .docx 后缀"""
+        from app.data_layer.PDF_preprocessor_data.transformation.mineru_adapter import (
+            _MINERU_SUPPORTED_SUFFIXES,
+        )
+        assert ".docx" in _MINERU_SUPPORTED_SUFFIXES
+        assert ".doc" in _MINERU_SUPPORTED_SUFFIXES
+        assert ".pptx" in _MINERU_SUPPORTED_SUFFIXES
+        assert ".xlsx" in _MINERU_SUPPORTED_SUFFIXES
+
+    @pytest.mark.asyncio
+    async def test_mineru_adapter_rejects_unsupported_suffix(self, tmp_dir):
+        """mineru_adapter 拒绝不支持的后缀"""
+        from app.data_layer.PDF_preprocessor_data.transformation.mineru_adapter import convert_with_mineru
+
+        fake_file = tmp_dir / "test.xyz"
+        fake_file.write_text("fake")
+
+        result = await convert_with_mineru(fake_file)
+        assert result.success is False
+        assert "不支持的文件格式" in result.error
+
+    @pytest.mark.asyncio
+    async def test_convert_pdf_nonexistent_still_fails(self, tmp_dir):
+        """不存在的文件仍然返回失败"""
+        result = await convert_pdf(tmp_dir / "nonexistent.docx", route="A")
+        assert result.success is False
+
+    def test_mineru_client_page_count_non_pdf_returns_zero(self, tmp_dir):
+        """非 PDF 文件 _get_pdf_page_count 返回 0"""
+        from app.data_layer.PDF_preprocessor_data.transformation.mineru_client import _get_pdf_page_count
+
+        docx_file = tmp_dir / "test.docx"
+        docx_file.write_text("fake docx content")
+
+        assert _get_pdf_page_count(docx_file) == 0

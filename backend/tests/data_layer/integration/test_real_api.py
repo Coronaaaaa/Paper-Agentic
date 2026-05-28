@@ -289,7 +289,7 @@ class TestCleaningQuality:
     def _get_cleaner(self):
         """导入 cleaner 模块（用 exec 绕过 dataclass 模块解析问题）"""
         ns = {}
-        exec(open("app/data_layer/PDF_preprocessor_data/cleaning/markdown_cleaner.py", encoding="utf-8").read(), ns)
+        exec(open("app/data_layer/preprocessing/cleaning/markdown_cleaner.py", encoding="utf-8").read(), ns)
         return ns["clean_markdown"]
 
     def _find_paper(self, name_fragment: str):

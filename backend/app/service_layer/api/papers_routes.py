@@ -43,7 +43,7 @@ async def open_paper(paper_id: str, request: Request):
         raise HTTPException(status_code=404, detail="论文文件不存在")
 
     for f in paper_dir.iterdir():
-        if f.is_file() and f.suffix.lower() in (".pdf", ".docx"):
+        if f.is_file() and f.suffix.lower() == ".pdf":
             media_type = (
                 "application/pdf"
                 if f.suffix.lower() == ".pdf"

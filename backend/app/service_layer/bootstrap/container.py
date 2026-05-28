@@ -6,13 +6,13 @@ from dataclasses import dataclass, field
 
 from app.agent_layer.runtime.chat_model import ChatModel
 from app.agent_layer.orchestration.tool_loop import ToolRegistry
-from app.data_layer.data_persistence.embedding.embedding_client import EmbeddingClient
-from app.data_layer.data_persistence.chroma_store.vector_index import VectorIndex
-from app.data_layer.data_persistence.chroma_store.keyword_index import KeywordIndex
-from app.data_layer.data_persistence.chroma_store.soft_delete import SoftDeleteManager
-from app.data_layer.data_persistence.file_management.directory_manager import DirectoryManager
-from app.data_layer.data_persistence.document_service import DocumentIngestService
-from app.data_layer.data_persistence.sqlite_runtime import (
+from app.data_layer.indexing.embedding.embedding_client import EmbeddingClient
+from app.data_layer.indexing.chroma_store.vector_index import VectorIndex
+from app.data_layer.indexing.chroma_store.keyword_index import KeywordIndex
+from app.data_layer.indexing.chroma_store.soft_delete import SoftDeleteManager
+from app.data_layer.storage.file_management.directory_manager import DirectoryManager
+from app.data_layer.storage.document_service import DocumentIngestService
+from app.data_layer.storage.sqlite_runtime import (
     SQLiteConversationRepo,
     SQLiteLibraryRepo,
     SQLiteImportTaskRepo,
@@ -35,6 +35,20 @@ class AppContainer:
         self.vector_store = VectorIndex(str(self.settings.chroma_data_dir))
         self.keyword_search = KeywordIndex(str(self.settings.bm25_data_dir))
         self.chat_model = ChatModel(self.settings)
+        if self.settings.reflection_configured:
+            class _ReflectionSettings:
+                llm_api_key = self.settings.reflection_api_key
+                llm_base_url = self.settings.reflection_base_url
+                llm_model = self.settings.reflection_model
+                llm_max_tokens = 2048
+                llm_temperature = self.settings.reflection_temperature
+                llm_timeout = self.settings.reflection_timeout
+                llm_fallback_models = ""
+                chunk_max_context = 8000
+
+            self.reflection_chat_model: ChatModel | None = ChatModel(_ReflectionSettings())
+        else:
+            self.reflection_chat_model = None
         self.embedding_client = EmbeddingClient(
             api_key=self.settings.embedding_api_key,
             base_url=self.settings.embedding_base_url,
@@ -88,7 +102,10 @@ class AppContainer:
         from app.agent_layer.session.persistence import SessionPersistence
         from app.agent_layer.session.window_store import ConversationWindowStore
 
-        window_store = self.conversation_window or ConversationWindowStore(max_messages=20)
+        window_store = self.conversation_window or ConversationWindowStore.from_context_window(
+            context_window_tokens=self.settings.context_window_tokens,
+            max_output_tokens=self.settings.max_output_tokens,
+        )
         editor_store = self.editor_context_store or EditorContextStore()
         persistence = SessionPersistence()
 
@@ -119,6 +136,7 @@ class AppContainer:
             embedding_client=self.embedding_client,
             tool_registry=tool_registry,
             cache_mode=cache_mode,
+            reflection_model=self.reflection_chat_model,
         )
 
     async def initialize(self) -> None:

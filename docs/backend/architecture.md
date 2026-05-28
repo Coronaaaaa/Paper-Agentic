@@ -28,7 +28,7 @@
 | `archives/_arch_doc/Decision-Snapshot/` | 用作“代码曾经怎么长成这样”的证据 | 部分采纳，用于现状映射和迁移判断，不直接约束新架构 |
 | `archives/_arch_doc/Short-Iteration/` | 只保留迭代痕迹 | 不再作为活动计划来源 |
 | `archives/_arch_doc/开发文档/` | 只吸收仍然成立的业务意图和接口背景 | 旧 API 命名、旧目录边界、旧解析主链大多废弃 |
-| `archives/_arch_doc/讨论/` | 吸收用户已确认的设计意图 | 已采纳三源加权、双循环、异常容灾、compact、Redis 策略 |
+| `archives/_arch_doc/讨论/` | 吸收用户已确认的设计意图 | 已采纳三源加权、双循环、异常容灾、compact、进程内内存运行态策略 |
 | `archives/_arch_doc/plan.md` | 视为历史版本计划 | 不再直接驱动当前重构 |
 
 规则只有一条：
@@ -449,7 +449,7 @@ Agent 层是第一版后端的业务中枢。
 当前实现基线仍可先用：
 
 - SQLite：长期事实
-- Redis：活动窗口、`written_context`、冻结副本、短期缓存
+- 进程内内存：活动窗口、`written_context`、selection、冻结副本、短期缓存
 
 #### 6.1.2 日志与运行观测
 
@@ -464,7 +464,7 @@ Agent 层是第一版后端的业务中枢。
 - 召回数量、重排数量、最终送入模型的证据数量
 - reflection 是否继续深入、是否换方向
 - compact 是否触发
-- Redis TTL 是否因内存压力衰减
+- 进程内活动窗口是否触发收缩或清理
 - 自动重试、降级、自修复是否发生
 - 最终为什么成功、降级或失败
 
@@ -497,7 +497,7 @@ Agent 层是第一版后端的业务中枢。
 | `output_tokens` | 本轮输出 token |
 | `retrieval_round` | 第几轮取证 |
 | `evidence_count` | 本轮证据数量 |
-| `redis_memory_ratio` | Redis 内存占用比例 |
+| `cache_mode` | 运行态缓存模式（`memory`） |
 
 事件命名默认分四类：
 
@@ -511,7 +511,7 @@ Agent 层是第一版后端的业务中枢。
 - `import.parsing.started`
 - `agent.reflection.decision`
 - `compact.triggered`
-- `runtime.redis.ttl_decayed`
+- `runtime.cache.pruned`
 
 #### 6.1.3 输入源加权与起手策略
 
@@ -852,7 +852,7 @@ compact 的目标：
 - `remaining_ratio`
 - `retrieval_planned`
 - `degraded_flags`
-- `redis_mode`
+- `cache_mode`
 
 #### 7.1.2 配置
 
@@ -875,7 +875,7 @@ compact 的目标：
 
 - 导入任务阶段日志
 - 对话请求阶段日志
-- Redis 内存与 TTL 监控
+- 进程内活动窗口与冻结副本监控
 - compact 触发事件
 - retry / degrade / self-heal 事件
 - 健康检查中的结构化状态
@@ -923,49 +923,24 @@ WPS 轮询入口在服务层，但语义属于 Agent 层。
 | `backend/data/papers/` | 原始文件副本与图片资源 |
 | `backend/data/parsed/` | Markdown、JSON、质量报告等解析产物 |
 | `backend/data/backups/` | 导入阶段中间产物和恢复点 |
-| Redis | 活动窗口、`written_context`、selection 临时态、短期缓存、compact 前后会话工作态 |
+| 进程内内存（`agent_layer/session/*`） | 活动窗口、`written_context`、selection、冻结副本、compact 工作态 |
 
-Redis 是第一版的正式运行时组件，默认视为可用。
+### 8.1 进程内内存窗口与回收策略
 
-### 8.1 Redis TTL 与内存策略
+- 运行态缓存不依赖外部服务，默认由进程内内存承担
+- 活动窗口和冻结副本都以请求上下文为中心，属于短期工作态
+- 冻结副本按 `request_id` 保留短暂窗口，过期后自动清理
+- 活动窗口按 token 预算和对话轮次截断，不做外部 TTL 驱动
+- 当上下文预算接近上限时，优先触发 compact，再裁剪最旧的 live window 条目
+- 程序关闭后临时监听状态清空；重启后先读取当前文档真实内容，再重建活窗口
 
-长期对话窗口在 Redis 中的默认策略：
+### 8.2 内存异常与降级
 
-- 内存占用未超过 `90%`：TTL 保持 1 小时
-- 内存占用超过 `90%`：TTL 急剧缩短，按指数级衰减
-- 无论怎么算，都不能放任占用打到 `95%`
-- 一旦预测或监控到占用接近 `95%`，停止把新增长期窗口写入 Redis，并显式提醒用户内存占用过高
-
-第一版默认监控源：
-
-- 以 Redis `INFO memory` 为主
-- 以 `used_memory / maxmemory` 作为主判据
-- 未设置 `maxmemory` 时，服务层必须显式标红“无法执行受控 TTL 策略”
-
-第一版默认 TTL 衰减策略：
-
-- `usage_ratio <= 0.90`：`ttl = 3600s`
-- `0.90 < usage_ratio < 0.95`：`ttl = max(120s, floor(3600 * exp(-40 * (usage_ratio - 0.90))))`
-- `usage_ratio >= 0.95`：拒绝写入新的长期窗口，只允许必要短期键或直接跳过 Redis 写入
-
-这不是为了数学好看，而是为了把“90% 开始收缩，95% 绝不硬顶”写成明确默认行为。
-
-这意味着：
-
-- TTL 不是死值
-- TTL 要受性能监控驱动
-- Redis 不是无限缓存池，而是受控的短期运行态存储
-
-### 8.2 Redis 异常与降级
-
-即便当前环境下 Redis 已安装并预期可用，架构上仍必须有故障处理：
-
-- 服务允许启动
-- 长期会话仍可用
-- 活动窗口退化
-- `written_context` 与其他编辑态临时缓存可退化
-- compact 相关短期能力可降级，但不能伪装成功
-- Redis 异常优先尝试自动恢复和重连，而不是立即把错误抛给用户
+- 进程内运行态没有外部依赖，不存在重连流程
+- 如果缓存对象初始化失败，回退到空窗口/空上下文，不阻塞主链
+- 长期事实继续由 SQLite 承担，摘要和会话记录可重建
+- compact 失败、图片语义失败等短期能力可降级，但不能伪装成功
+- 内存窗口恢复依赖当前 editor context 和持久化摘要重新组装
 
 ## 9. 目标目录组织
 
@@ -1047,7 +1022,7 @@ backend/app/
 - 上下文剩余比例低于 `5%` 时触发 compact
 - compact 使用小模型总结历史并重注入上下文
 - 日志与观测是正式能力，采用结构化事件
-- Redis TTL 受内存监控驱动动态衰减
+- 进程内内存运行态由上下文预算和 compact 机制驱动
 
 ## 12. 仍待落地的事项
 

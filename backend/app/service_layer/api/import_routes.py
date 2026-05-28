@@ -32,9 +32,9 @@ async def start_import(file: UploadFile = FastAPIFile(...), request: Request = N
     dest.write_bytes(content)
 
     # 格式校验
-    if dest.suffix.lower() not in (".pdf", ".docx", ".doc", ".pptx", ".xlsx"):
+    if dest.suffix.lower() != ".pdf":
         dest.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="仅支持 PDF/DOCX/DOC/PPTX/XLSX 格式")
+        raise HTTPException(status_code=400, detail="仅支持 PDF 格式")
 
     # 去重检查
     file_hash = _compute_file_hash(dest)
@@ -105,7 +105,7 @@ async def _run_import_with_progress(container, task_id: str, file_path: Path):
         container.import_task_repo.update_status(task_id, "running")
         await publish({"status": "running", "step": "starting", "paper_id": None})
 
-        from app.data_layer.PDF_preprocessor_data.transfer.pipeline import PipelineOrchestrator
+        from app.data_layer.preprocessing.transfer.pipeline import PipelineOrchestrator
 
         loop = asyncio.get_event_loop()
 

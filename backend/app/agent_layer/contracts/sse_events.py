@@ -54,9 +54,24 @@ class DoneEvent(BaseModel):
 class ErrorEvent(BaseModel):
     event: Literal["error"] = "error"
     message: str
+    code: str | None = None
+    stage: str | None = None
+    retryable: bool | None = None
+    degraded: bool | None = None
+    suggested_action: str | None = None
 
     def to_sse_frame(self) -> str:
-        payload = {"message": self.message}
+        payload: dict = {"message": self.message}
+        if self.code is not None:
+            payload["code"] = self.code
+        if self.stage is not None:
+            payload["stage"] = self.stage
+        if self.retryable is not None:
+            payload["retryable"] = self.retryable
+        if self.degraded is not None:
+            payload["degraded"] = self.degraded
+        if self.suggested_action is not None:
+            payload["suggested_action"] = self.suggested_action
         return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 

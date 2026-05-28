@@ -23,7 +23,7 @@ from app.agent_layer.contracts.sse_events import (
 from app.agent_layer.runtime.token_budget import estimate_tokens
 from app.data_layer.retrieval.fusion.rrf_fusion import rrf_fuse
 from app.agent_layer.hooks.compact import compact_conversation
-from app.agent_layer.hooks.reflection import reflect, judge_evidence
+from app.agent_layer.hooks.reflection import judge_evidence
 from app.agent_layer.orchestration.tool_loop import (
     ToolLoopEvent,
     ToolRegistry,
@@ -38,27 +38,53 @@ from app.agent_layer.session.window_store import ConversationWindowStore
 logger = logging.getLogger("paper-assistant")
 
 
-def _user_friendly_error(exc: Exception) -> str:
-    """将内部异常转换为用户友好的错误信息，不暴露内部细节"""
+def _user_friendly_error(exc: Exception) -> dict:
+    """将内部异常转换为用户友好的错误载荷，不暴露内部细节"""
     if isinstance(exc, RateLimitError):
-        return "当前请求量较大，请稍后再试"
+        return {
+            "message": "当前请求量较大，请稍后再试",
+            "code": "rate_limit",
+            "retryable": True,
+            "suggested_action": "请稍后重试",
+        }
     if isinstance(exc, APIConnectionError):
-        return "无法连接到 AI 服务，请检查网络后重试"
+        return {
+            "message": "无法连接到 AI 服务，请检查网络后重试",
+            "code": "connection",
+            "retryable": True,
+            "suggested_action": "请检查网络",
+        }
     if isinstance(exc, APIStatusError):
         if exc.status_code >= 500:
-            return "AI 服务暂时不可用，请稍后再试"
-        return f"请求被拒绝（状态码 {exc.status_code}）"
+            return {
+                "message": "AI 服务暂时不可用，请稍后再试",
+                "code": "server_error",
+                "retryable": True,
+            }
+        return {
+            "message": f"请求被拒绝（状态码 {exc.status_code}）",
+            "code": "client_error",
+            "retryable": False,
+        }
     if isinstance(exc, TimeoutError):
-        return "请求超时，请稍后再试"
-    return "处理请求时出现错误，请稍后再试"
+        return {
+            "message": "请求超时，请稍后再试",
+            "code": "timeout",
+            "retryable": True,
+            "suggested_action": "请稍后重试",
+        }
+    return {
+        "message": "处理请求时出现错误，请稍后再试",
+        "code": "unknown",
+        "retryable": False,
+    }
 
 
 _RAG_SYSTEM_PROMPT = """你是一个有帮助的学术写作助手。请用中文回答用户的问题。
 
 你必须基于提供的资料回答。
 - 只在有证据时下结论，不要编造来源
-- 回答中引用证据时，使用方括号编号，如 [1]、[2]
-- 同一个段落可引用多个来源，如 [1][3]
+- 回答中引用证据时，使用 [N] 格式标注来源编号（如 [1]、[2][3]）
 - 编号必须对应提供给你的来源顺序
 - 优先把结论写清楚，再用编号引用支撑，不要输出文件 hash 或内部 ID
 
@@ -85,8 +111,10 @@ class TurnRunner:
         embedding_client: Any | None = None,
         tool_registry: ToolRegistry | None = None,
         cache_mode: str = "unavailable",
+        reflection_model: Any | None = None,
     ) -> None:
         self._chat_model = chat_model
+        self._reflection_model = reflection_model
         self._snapshot_builder = snapshot_builder
         self._retrieval_gate = retrieval_gate
         self._source_mapper = source_mapper
@@ -131,6 +159,8 @@ class TurnRunner:
             remaining_ratio = remaining_tokens / max_context if max_context > 0 else 0.0
 
             # ── Compact：剩余空间不足时压缩历史 ──
+            # 注意：FrozenTurnSnapshot 是 Pydantic BaseModel，默认 frozen=False 允许属性赋值。
+            # 若后续改为 frozen=True，此处需要用 model_copy(update=...) 替代直接赋值。
             if remaining_ratio < 0.05 and snapshot.recent_window:
                 summary = await compact_conversation(
                     self._chat_model, snapshot.recent_window
@@ -173,16 +203,19 @@ class TurnRunner:
                 max_direction_switches = 2
                 direction_switches = 0
                 current_query = query_text
+                current_topk = 10  # 初始 topk
 
                 for round_num in range(1, max_reflection_rounds + 1):
-                    retrieval_results = await self._retrieve(current_query, snapshot.paper_ids)
+                    retrieval_results = await self._retrieve(
+                        current_query, snapshot.paper_ids, topk=current_topk
+                    )
                     sources = self._source_mapper(retrieval_results)
                     context = self._build_context(retrieval_results)
 
                     if not snapshot.reflection_enabled or not context:
                         break
 
-                    judgment = await judge_evidence(self._chat_model, current_query, context)
+                    judgment = await judge_evidence(self._chat_model, current_query, context, judge_model=self._reflection_model)
                     yield ReflectionEvent(
                         round=round_num,
                         verdict=judgment.verdict,
@@ -192,13 +225,15 @@ class TurnRunner:
                     if judgment.verdict == "supported":
                         break
 
-                    if judgment.verdict == "off_track":
+                    if judgment.verdict in ("off_track", "conflicting"):
                         direction_switches += 1
                         if direction_switches >= max_direction_switches:
                             break
-                        # 用 reason 作为补充关键词重新检索
                         current_query = f"{query_text} {judgment.reason}"
-                    # "insufficient": 用原查询再试一次（下一轮会重新检索）
+
+                    if judgment.verdict == "insufficient":
+                        # 沿当前方向深挖：扩大检索范围
+                        current_topk = min(current_topk * 2, 50)
 
             messages = self._build_messages(snapshot, context)
 
@@ -210,21 +245,36 @@ class TurnRunner:
             async for chunk in self._chat_model.chat_stream(messages, model=model_override):
                 full_text += chunk
 
-            # ── Reflection 循环（独立 hook，不与 compact 耦合）─────
-            if snapshot.reflection_enabled:
-                ref_result = await reflect(
-                    chat_model=self._chat_model,
-                    original_query=query_text,
-                    llm_output=full_text,
-                    context=context,
+            # ── Tool Loop：LLM 可决定调用内部工具 ──
+            if self._tool_registry and self._tool_registry.tool_names:
+                from app.agent_layer.orchestration.tool_loop import execute_tool_loop
+
+                async def _llm_decide(msgs: list[dict]):
+                    # 让 LLM 判断是否需要工具调用
+                    tool_prompt = msgs + [{"role": "system", "content":
+                        f"你可以调用以下工具：{self._tool_registry.tool_names}。"
+                        "如果需要调用工具，返回 JSON：{\"name\": \"工具名\", \"arguments\": {...}}。"
+                        "如果不需要调用工具，直接回答用户问题即可，不要返回 JSON。"
+                    }]
+                    resp = await self._chat_model.chat(tool_prompt)
+                    import json as _json
+                    try:
+                        data = _json.loads(resp.strip())
+                        if "name" in data:
+                            from app.agent_layer.orchestration.tool_loop import ToolCall
+                            return ToolCall(name=data["name"], arguments=data.get("arguments", {}))
+                    except (_json.JSONDecodeError, ValueError):
+                        pass
+                    return None  # 不需要工具调用
+
+                tool_result = await execute_tool_loop(
+                    llm_decide=_llm_decide,
+                    initial_messages=messages,
+                    registry=self._tool_registry,
                 )
-                for entry in ref_result.feedback_log:
-                    yield ReflectionEvent(
-                        round=entry["round"],
-                        verdict=entry["verdict"],
-                        reason=entry["reason"],
-                    ).to_sse_frame()
-                full_text = ref_result.output
+                if tool_result.rounds_used > 0:
+                    # 工具调用有结果，用工具输出作为最终回答
+                    full_text = tool_result.final_output
 
             blocks = self._block_streamer(full_text, sources)
             for block in blocks:
@@ -238,7 +288,8 @@ class TurnRunner:
 
         except Exception as exc:
             logger.exception("Turn execution failed: %s", exc)
-            yield ErrorEvent(message=_user_friendly_error(exc)).to_sse_frame()
+            err = _user_friendly_error(exc)
+            yield ErrorEvent(**err).to_sse_frame()
 
     async def _freeze_snapshot(self, request: AskRequest, request_id: str) -> Any:
         editor_context = await self._editor_context_store.get(request.session_id)
@@ -267,7 +318,9 @@ class TurnRunner:
         parts.sort(key=lambda x: x[0], reverse=True)
         return "\n\n".join(text for _, text in parts)
 
-    async def _retrieve(self, query_text: str, paper_ids: list[str] | None) -> list[dict]:
+    async def _retrieve(
+        self, query_text: str, paper_ids: list[str] | None, topk: int = 10
+    ) -> list[dict]:
         dense_results = []
         sparse_results = []
 
@@ -287,7 +340,7 @@ class TurnRunner:
         if not dense_results and not sparse_results:
             return []
 
-        fused = rrf_fuse(dense_results, sparse_results, topk=10, keyword_index=self._keyword_search)
+        fused = rrf_fuse(dense_results, sparse_results, topk=topk, keyword_index=self._keyword_search)
         return [
             {
                 "content": doc.content,

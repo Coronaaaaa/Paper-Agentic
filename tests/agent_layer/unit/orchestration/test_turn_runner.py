@@ -373,34 +373,32 @@ async def test_reflection_disabled_by_default(runner, mock_block_streamer):
 
 
 @pytest.mark.asyncio
-async def test_reflection_yields_events(runner, mock_block_streamer):
-    """reflection_enabled=True 时产出 reflection 事件"""
+async def test_reflection_yields_events(runner, mock_block_streamer, mock_retrieval_gate):
+    """reflection_enabled=True + enable_rag=True 时产出 reflection 事件（检索循环内）"""
     from dataclasses import dataclass, field
 
     @dataclass(frozen=True)
-    class _RR:
-        output: str
-        rounds_used: int
-        direction_switches: int
-        feedback_log: list = field(default_factory=list)
+    class _EJ:
+        verdict: str
+        reason: str
 
-    async def _reflect_with_feedback(chat_model, original_query, llm_output, context="", max_rounds=3):
-        return _RR(
-            output="refined output",
-            rounds_used=1,
-            direction_switches=0,
-            feedback_log=[{"round": 1, "verdict": "supported", "reason": "ok"}],
-        )
+    judge_called = False
 
-    # Patch reflect via the turn_runner module's namespace
+    async def _fake_judge(chat_model, query, evidence):
+        nonlocal judge_called
+        judge_called = True
+        return _EJ(verdict="supported", reason="证据充分")
+
+    # Patch judge_evidence via turn_runner module namespace
     import app.agent_layer.orchestration.turn_runner as tr_mod
-    tr_mod.reflect = _reflect_with_feedback
+    tr_mod.judge_evidence = _fake_judge
 
+    mock_retrieval_gate.return_value = True
+    runner._retrieve = AsyncMock(return_value=[{"content": "test", "paper_id": "p1", "chunk_id": "c1", "title": "t", "page": 1, "section": "s"}])
     mock_block_streamer.return_value = [_FakeEvent("block", content="b1")]
 
-    frames = await _collect(runner, _FakeRequest(prompt="test", reflection=True))
+    frames = await _collect(runner, _FakeRequest(prompt="test", reflection=True, enable_rag=True))
 
     event_types = [f.split("\n")[0].split(": ")[1] for f in frames]
-    # Should have reflection event before blocks
-    assert "reflection" in event_types
+    assert "reflection" in event_types, f"judge_called={judge_called}, events={event_types}"
     assert "block" in event_types

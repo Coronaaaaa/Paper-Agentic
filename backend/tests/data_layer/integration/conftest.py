@@ -15,7 +15,7 @@ if str(BACKEND_ROOT) not in sys.path:
 _FIXTURES_DIR = BACKEND_ROOT / "tests" / "fixtures"
 ZH_PDF_DIR = _FIXTURES_DIR / "pdfs_zh"
 EN_PDF_DIR = _FIXTURES_DIR / "pdfs_en"
-OUTPUT_DIR = BACKEND_ROOT / "tests" / "output"
+OUTPUT_DIR = BACKEND_ROOT / "tests" / "data"
 
 
 def _find_first_pdf(directory: Path) -> Path | None:

@@ -61,9 +61,9 @@ def en_pdf():
 
 @pytest.fixture
 def output_dir():
-    """测试产出目录（写入 tests/output/）"""
+    """测试产出目录（写入 tests/data/）"""
     import time
     run_id = f"run_{int(time.time())}"
-    out = BACKEND_ROOT / "tests" / "output" / "data_layer" / run_id
+    out = BACKEND_ROOT / "tests" / "data" / "data_layer" / run_id
     out.mkdir(parents=True, exist_ok=True)
     return out

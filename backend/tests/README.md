@@ -5,19 +5,23 @@
 ```
 tests/
 ├── conftest.py              # 根配置（sys.path）
-├── .gitignore               # 排除 output/ fixtures/ _artifacts/ __pycache__/
+├── .gitignore               # 排除 data/ fixtures/ _artifacts/ __pycache__/
 │
-├── unit/                    # 单元测试（纯逻辑，无外部依赖）
-│   ├── agent_layer/         # Agent 层单测
+├── agent_layer/             # Agent 层测试
+│   ├── unit/                # 单测（纯逻辑，mock 外部依赖）
 │   │   ├── contracts/       # 数据契约测试
+│   │   ├── hooks/           # Hook 测试
 │   │   ├── orchestration/   # 编排测试
 │   │   ├── planning/        # 规划测试
 │   │   ├── response/        # 回答生成测试
 │   │   ├── runtime/         # 运行时测试
-│   │   └── session/         # 会话测试
-│   │
-│   ├── data_layer/          # 数据层单测
-│   │   ├── conftest.py      # 共享 fixtures（tmp_dir, zh_pdf, en_pdf）
+│   │   ├── session/         # 会话测试
+│   │   └── chain/           # 多组件串联测试（全 mock）
+│   ├── e2e/                 # 端到端测试
+│   └── soak/                # 压力测试
+│
+├── data_layer/              # 数据层测试
+│   ├── unit/                # 纯逻辑单测
 │   │   ├── chroma_store/    # 向量库 + BM25 测试
 │   │   ├── chunking/        # 语义切分测试
 │   │   ├── cleaning/        # 清洗测试
@@ -30,29 +34,27 @@ tests/
 │   │   ├── transfer/        # 路由调度测试
 │   │   ├── transformation/  # 转换测试
 │   │   └── vlm_understanding/ # VLM 测试
-│   │
-│   └── service_layer/       # 服务层单测
+│   └── integration/         # 集成测试（需真实 API / 文件）
 │
-├── integration/             # 集成测试（需真实 API / 文件）
-│   └── data_layer/
-│       ├── test_mineru_*.py          # MinerU 解析相关
-│       └── test_real_api.py          # 真实 API 测试
+├── service_layer/           # 服务层测试
+│   └── unit/                # 纯逻辑单测
 │
 ├── fixtures/                # 测试输入（只读，不修改，不入库）
 │   ├── pdfs_zh/             # 中文 PDF 样本（自行准备）
 │   ├── pdfs_en/             # 英文 PDF 样本（自行准备）
 │   └── README.md
 │
-└── output/                  # 测试产出（.gitignore，不入库）
-    └── mineru_json_analysis/
+└── data/                    # 测试产出（.gitignore，不入库）
 ```
 
 ## 分类原则
 
 | 类型 | 目录 | 特征 | 运行频率 |
 |------|------|------|----------|
-| 单元测试 | `unit/` | 纯逻辑，mock 外部依赖，毫秒级 | 每次提交 |
-| 集成测试 | `integration/` | 需要真实 API / 真实文件，秒~分钟级 | 合并前 / 手动 |
+| 单元测试 | `{layer}/unit/` | 纯逻辑，mock 外部依赖，毫秒级 | 每次提交 |
+| 集成测试 | `{layer}/integration/` | 需要真实 API / 真实文件，秒~分钟级 | 合并前 / 手动 |
+| 端到端测试 | `{layer}/e2e/` | 全链路流程验证 | 发布前 |
+| 压力测试 | `{layer}/soak/` | 大量数据 / 长时间运行 | 定期 |
 
 ## 运行命令
 
@@ -60,24 +62,25 @@ tests/
 cd backend
 
 # 运行所有单元测试
-uv run pytest tests/unit/ -v
+uv run pytest tests/agent_layer/unit tests/data_layer/unit tests/service_layer/unit -v
 
 # 运行所有集成测试
-uv run pytest tests/integration/ -v -s
+uv run pytest tests/data_layer/integration -v -s
 
 # 运行特定模块
-uv run pytest tests/unit/data_layer/cleaning/ -v
+uv run pytest tests/data_layer/unit/cleaning/ -v
 
-# 运行全部
-uv run pytest tests/ -v
+# 运行全部（不含 soak/e2e）
+uv run pytest tests/agent_layer/unit tests/data_layer tests/service_layer -v
 ```
 
 ## 添加新测试
 
-1. 判断类型：纯逻辑 → `unit/`，需 API → `integration/`
-2. 放到对应子目录，保持 `test_<module>.py` 命名
-3. 共享 fixtures 写在对应 `conftest.py`
-4. 测试产出写入 `output/`（不要写到 fixtures/ 或其他目录）
+1. 判断所属 layer：`agent_layer` / `data_layer` / `service_layer`
+2. 判断类型：纯逻辑 → `unit/`，需 API → `integration/`，全链路 → `e2e/`
+3. 放到对应子目录，保持 `test_<module>.py` 命名
+4. 共享 fixtures 写在对应 `conftest.py`
+5. 测试产出写入 `data/`（不要写到 fixtures/ 或其他目录）
 
 ## PDF 样本
 
@@ -91,6 +94,6 @@ uv run pytest tests/ -v
 | 目录/文件 | 原因 |
 |-----------|------|
 | `fixtures/pdfs_*/` | PDF 体积大（500MB+），自行准备 |
-| `output/` | MinerU 解析产物，运行时生成 |
+| `data/` | MinerU 解析产物，运行时生成 |
 | `_artifacts/` | soak reports、fault logs，运行时产物 |
 | `__pycache__/` | Python 字节码 |

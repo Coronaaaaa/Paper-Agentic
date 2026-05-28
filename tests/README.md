@@ -1,11 +1,10 @@
-# 后端测试规范
+# 测试规范
 
 ## 目录结构
 
 ```
 tests/
-├── conftest.py              # 根配置（sys.path）
-├── .gitignore               # 排除 data/ fixtures/ _artifacts/ __pycache__/
+├── conftest.py              # 根配置（sys.path → backend/）
 │
 ├── agent_layer/             # Agent 层测试
 │   ├── unit/                # 单测（纯逻辑，mock 外部依赖）
@@ -59,8 +58,6 @@ tests/
 ## 运行命令
 
 ```bash
-cd backend
-
 # 运行所有单元测试
 uv run pytest tests/agent_layer/unit tests/data_layer/unit tests/service_layer/unit -v
 

@@ -23,6 +23,9 @@ class _FakeUsedInputs:
         self.selection = 0.0
         self.written_context = 0.0
 
+    def model_dump(self):
+        return {"prompt": self.prompt, "selection": self.selection, "written_context": self.written_context}
+
 
 class _FakeSnapshot:
     def __init__(self, **kw):
@@ -83,6 +86,7 @@ def _install_mocks():
     sse_mod.DoneEvent = _make_event("done")
     sse_mod.ErrorEvent = _make_event("error")
     sse_mod.ReflectionEvent = _make_event("reflection")
+    sse_mod.MetadataEvent = _make_event("metadata")
     mods["app.agent_layer.contracts.sse_events"] = sse_mod
 
     # Mock hooks.reflection
@@ -249,7 +253,7 @@ async def test_basic_flow_no_rag(runner, mock_retrieval_gate, mock_block_streame
     frames = await _collect(runner, _FakeRequest(prompt="test"))
 
     event_types = [f.split("\n")[0].split(": ")[1] for f in frames]
-    assert event_types == ["thinking", "block", "block", "sources", "done"]
+    assert event_types == ["metadata", "thinking", "block", "block", "sources", "done"]
 
 
 @pytest.mark.asyncio
@@ -263,7 +267,7 @@ async def test_flow_with_rag(runner, mock_retrieval_gate, mock_source_mapper, mo
         frames = await _collect(runner, _FakeRequest(prompt="test"))
 
     event_types = [f.split("\n")[0].split(": ")[1] for f in frames]
-    assert event_types == ["thinking", "block", "sources", "done"]
+    assert event_types == ["metadata", "thinking", "block", "sources", "done"]
     mock_retrieve.assert_called_once()
 
 
@@ -277,7 +281,7 @@ async def test_empty_query_yields_error(runner):
 
 @pytest.mark.asyncio
 async def test_llm_exception_yields_error(runner, mock_chat_model):
-    async def _fail(msgs):
+    async def _fail(msgs, model=None):
         raise RuntimeError("LLM down")
         yield
 
@@ -285,8 +289,10 @@ async def test_llm_exception_yields_error(runner, mock_chat_model):
 
     frames = await _collect(runner, _FakeRequest(prompt="test", thinking=False))
 
-    assert len(frames) == 1
-    assert "error" in frames[0]
+    # metadata 在 LLM 调用之前发送，所以异常时有 2 个帧
+    assert len(frames) == 2
+    assert "metadata" in frames[0]
+    assert "error" in frames[1]
 
 
 @pytest.mark.asyncio

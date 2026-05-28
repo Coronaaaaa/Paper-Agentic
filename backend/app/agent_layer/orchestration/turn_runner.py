@@ -121,7 +121,10 @@ class TurnRunner:
                 + (snapshot.written_context or "")
                 + (snapshot.history_summary or "")
             )
-            max_context = self._chat_model.max_context_tokens if hasattr(self._chat_model, "max_context_tokens") else 30000
+            try:
+                max_context = int(getattr(self._chat_model, "max_context_tokens", 30000))
+            except (TypeError, ValueError):
+                max_context = 30000
             remaining_tokens = max(0, max_context - context_tokens)
             remaining_ratio = remaining_tokens / max_context if max_context > 0 else 0.0
 

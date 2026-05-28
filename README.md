@@ -90,14 +90,20 @@ npx wpsjs debug
 cd backend
 
 # 单元测试（每次提交）
-uv run pytest tests/unit/ -v
+uv run pytest tests/agent_layer/unit tests/data_layer/unit tests/service_layer/unit -v
 
 # 集成测试（需真实 API key）
-uv run pytest tests/integration/ -v
+uv run pytest tests/data_layer/integration -v -s
 
 # 全部测试
 uv run pytest tests/ -v
 ```
+
+测试按 layer 组织：`tests/{layer}/{unit,integration,e2e}/`，详见 [tests/README.md](backend/tests/README.md)。
+
+## 实验记录
+
+实验数据与对比结果见 [LabRepo.md](LabRepo.md)。
 
 ## API 接口
 

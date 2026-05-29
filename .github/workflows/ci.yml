@@ -30,7 +30,7 @@ jobs:
 
       - name: Run unit tests
         working-directory: backend
-        run: uv run pytest test_backend/agent_layer/unit test_backend/data_layer/unit test_backend/service_layer/unit -v --tb=short
+        run: uv run --with pytest --with pytest-asyncio pytest test_backend/agent_layer/unit test_backend/data_layer/unit test_backend/service_layer/unit -v --tb=short
 
   backend-lint:
     runs-on: ubuntu-latest

@@ -17,7 +17,7 @@
 ## ClaudeCode 执行要求
 
 - 测试文件建议：
-  - `backend/tests/agent_layer/response/test_answer_generator_contract.py`
-  - `backend/tests/agent_layer/response/test_source_mapper.py`
-  - `backend/tests/agent_layer/response/test_real_query_chain.py`
+  - `backend/test_backend/agent_layer/response/test_answer_generator_contract.py`
+  - `backend/test_backend/agent_layer/response/test_source_mapper.py`
+  - `backend/test_backend/agent_layer/response/test_real_query_chain.py`
 - `RSP-C01` 必须使用真实索引和真实 LLM；若 LLM 未配置，记为 `blocked`。

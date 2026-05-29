@@ -12,7 +12,7 @@
 
 ## ClaudeCode 执行要求
 - 测试文件建议：
-  - `backend/tests/data_layer/config/test_settings.py`
-  - `backend/tests/data_layer/embedding/test_embedding_client.py`
+  - `backend/test_backend/data_layer/config/test_settings.py`
+  - `backend/test_backend/data_layer/embedding/test_embedding_client.py`
 - 若真实 embedding API 未配置，`EMB-C01/C02` 必须输出 `blocked`，不能用 stub 假装通过。
 

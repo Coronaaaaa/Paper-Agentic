@@ -1,6 +1,6 @@
 # 实验记录
 
-本文档记录论文助手项目的实验数据与对比结果。原始数据存储在本地 `backend/tests/data/` 目录（不入版本控制）。
+本文档记录论文助手项目的实验数据与对比结果。原始数据存储在本地 `backend/test_backend/data/` 目录（不入版本控制）。
 
 ---
 
@@ -33,7 +33,7 @@
 ### 本地数据结构
 
 ```
-backend/tests/data/mineru_json_analysis/
+backend/test_backend/data/mineru_json_analysis/
 ├── {论文名}/
 │   ├── full.md          # MinerU 解析的完整 Markdown
 │   ├── content_list.json # 结构化内容列表
@@ -99,8 +99,8 @@ uv run pytest tests/data_layer/integration/test_real_api.py -v -s
 
 | 路径 | 内容 | 原因 |
 |------|------|------|
-| `backend/tests/data/` | MinerU 解析产物、测试运行时输出 | 体积大，运行时生成 |
-| `backend/tests/fixtures/pdfs_*/` | PDF 测试样本 | 体积大（500MB+） |
+| `backend/test_backend/data/` | MinerU 解析产物、测试运行时输出 | 体积大，运行时生成 |
+| `backend/test_backend/fixtures/pdfs_*/` | PDF 测试样本 | 体积大（500MB+） |
 | `backend/data/` | 运行态数据（ChromaDB、SQLite） | 运行时生成 |
 | `datasets/` | 外部测试数据集 | 体积大，自行准备 |
 

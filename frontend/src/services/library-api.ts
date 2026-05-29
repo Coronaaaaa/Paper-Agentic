@@ -6,6 +6,7 @@ export interface PaperItem {
   paper_id: string
   title: string
   authors: string
+  year: number | null
   file_path: string
   file_hash: string
   chunk_count: number

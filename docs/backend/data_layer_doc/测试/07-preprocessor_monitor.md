@@ -10,6 +10,6 @@
 4. `PMON-C02`：在故障样本上验证失败事件与降级事件都能落盘。
 
 ## ClaudeCode 执行要求
-- 测试文件建议：`backend/tests/data_layer/monitor/test_pipeline_monitor.py`
+- 测试文件建议：`backend/test_backend/data_layer/monitor/test_pipeline_monitor.py`
 - 当前没有接线，因此 `PMON-I01/C01/C02` 应先红灯，再伴随接线修复一起转绿。
 

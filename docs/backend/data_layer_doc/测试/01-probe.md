@@ -11,9 +11,9 @@
 4. `PROBE-I03`：按 manifest 为每种可用 route 选至少 2 份代表样本，写入 `route_selection.json` 供后续模块复用。
 
 ## ClaudeCode 执行要求
-- 测试文件建议：`backend/tests/data_layer/probe/test_pdf_probe.py`
+- 测试文件建议：`backend/test_backend/data_layer/probe/test_pdf_probe.py`
 - 产物建议：
-  - `backend/tests/_artifacts/data_layer/sample_manifest.json`
-  - `backend/tests/_artifacts/data_layer/route_selection.json`
+  - `backend/test_backend/_artifacts/data_layer/sample_manifest.json`
+  - `backend/test_backend/_artifacts/data_layer/route_selection.json`
 - 通过标准：probe 不能只在小样本上通过；必须对全量样本扫描成功，最多允许个别损坏 PDF 被单独记录为异常样本。
 

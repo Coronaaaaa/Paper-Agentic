@@ -3,15 +3,15 @@
 活动文档只看 `docs/backend/`。
 
 - [后端总纲](./backend/architecture.md)
-- [后端现状映射](./backend/现状代码映射.md)
-- [后端迁移任务表](./backend/迁移任务表.md)
-- [后端实施切片](./backend/实施切片.md)
-- [后端重构清单](./backend/checklists/backend-refactor-checklist.md)
-- [后端待办](./backend/代办/)
-- [后端 ADR](./backend/adr/)
+- [Agent 层设计](./backend/agent_layer_doc/agent_layer架构设计.md)
+- [数据层设计](./backend/data_layer_doc/data_layer架构设计.md)
+- [API 接口文档](./backend/server_layer_doc/API接口文档.md)
+- [代码偏差清单](./backend/代办/方向纠偏.md)
+- [已锁定决策与待办](./backend/代办/后端架构待办.md)
 
 归档目录：
 
-- `_archive/_arch_doc/` — 过时文档
+- `docs/backend/代办/_achive__/` — 已过时的迁移文档和已推翻的 ADR
+- `_archive/_arch_doc/` — 历史文档
 - `_archive/backend/` — 旧后端代码
 - `_archive/backend_temp_skeleton/` — 临时新骨架

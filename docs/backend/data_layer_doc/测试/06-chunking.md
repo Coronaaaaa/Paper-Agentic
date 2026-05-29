@@ -11,6 +11,6 @@
 5. `CHUNK-C03`：为超长段落样本验证 overlap 只在超长保护场景触发。
 
 ## ClaudeCode 执行要求
-- 测试文件建议：`backend/tests/data_layer/chunking/test_semantic_chunker.py`
+- 测试文件建议：`backend/test_backend/data_layer/chunking/test_semantic_chunker.py`
 - 真链路测试必须复用 cleaning 的真实输出，不要直接用纯手工短字符串替代全部覆盖。
 

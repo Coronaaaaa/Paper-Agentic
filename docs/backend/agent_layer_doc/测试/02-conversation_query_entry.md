@@ -24,6 +24,6 @@
 ## ClaudeCode 执行要求
 
 - 测试文件建议：
-  - `backend/tests/service_layer/query_api/test_query_route.py`
-  - `backend/tests/service_layer/query_api/test_conversation_list.py`
+  - `backend/test_backend/service_layer/query_api/test_query_route.py`
+  - `backend/test_backend/service_layer/query_api/test_conversation_list.py`
 - SSE 测试必须解析真实字节流，不允许直接调用内部生成器跳过 HTTP 层。

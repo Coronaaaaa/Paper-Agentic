@@ -51,12 +51,12 @@
 
 ### 后端
 - **框架**: FastAPI (Python 3.13)
-- **LLM/VLM**: Kimi Coding API (kimi-for-coding)
-- **向量库**: Chromadb（纯 Python，SQLite 持久化）
+- **LLM/VLM**: provider-neutral（通过环境变量配置，不硬编码供应商）
+- **向量库**: ChromaDB（纯 Python，SQLite 持久化）
 - **关键词检索**: BM25 + jieba
-- **Embedding**: 硅基流动 Qwen3-Embedding-4B (1536维)
-- **Rerank**: 硅基流动 Qwen3-Reranker-8B（已集成，未启用）
-- **PDF 解析**: MinerU API（远程解析）
+- **Embedding**: 可配置（默认通过 .env 指定 API 地址和模型）
+- **PDF 解析**: MinerU 精准解析 API（PP-DocLayoutV2 + SLANet+），支持 PDF/DOCX/DOC/PPTX/XLSX
+- **缓存**: 进程内内存（无外部缓存依赖）
 
 ### 前端
 - **框架**: Vue 3 + TypeScript
@@ -69,33 +69,26 @@
 
 ```
 论文助手/
-├── backend/                  # 当前活动后端
+├── backend/                  # FastAPI 后端
 │   ├── app/
-│   ├── scripts/
-│   ├── data/                 # 运行态数据
-│   ├── main.py
+│   │   ├── data_layer/       # 数据层（预处理 / 索引 / 检索 / 存储）
+│   │   ├── agent_layer/      # Agent 层（编排 / 规划 / 回答 / 会话）
+│   │   └── service_layer/    # 服务层（API / SSE / 配置 / 启动）
+│   ├── tests/                # 按 layer 组织（agent_layer/unit, data_layer/unit, ...）
+│   ├── data/                 # 运行态数据（chroma_db, bm25_index, papers, parsed, app.db）
+│   ├── main.py               # 入口
 │   └── pyproject.toml
-├── frontend/                 # 当前活动前端（WPS 插件）
+├── frontend/                 # Vue 3 + TypeScript + WPS 插件壳
 │   ├── src/
-│   ├── wps-plugin/
 │   └── vite.config.ts
-├── docs/                     # 全局文档
-│   ├── Decision-Snapshot/    # 四维度决策快照
-│   │   ├── 1-静态结构/       # 模块边界、存储模型、接口定义、代码组织
-│   │   ├── 2-动态行为/       # 业务时序、错误传播、状态机、并发调度
-│   │   ├── 3-物理部署/       # 依赖拓扑、资源配置、环境差异
-│   │   └── 4-演进与债务/     # 变更热点、架构适应度、失效模式、演进路线
-│   └── 账单/                 # 经费记录
-├── datasets/                 # 测试样本（自备 PDF，不入版本控制）
-│   ├── 中文文献-测试-PDF/    # 中文论文 PDF（集成测试用）
-│   ├── 外文文献-测试-PDF/    # 外文论文 PDF（集成测试用）
-│   └── README.md
-├── archives/                 # 历史版本与旧数据归档
-│   ├── legacy/
-│   └── packages/
-├── research/                 # 调研资料
-└── .tools/rag/               # 微 RAG 知识库
+├── docs/                     # 文档与决策记录
+│   └── backend/              #   活动文档（architecture.md + 三层子文档 + 待办）
+├── datasets/                 # 测试样本（不入版本控制）
+├── log/                      # 运行日志（不入版本控制）
+└── archives/                 # 历史版本归档
 ```
+
+详细目录树见 [README.md](README.md)。
 
 ---
 
@@ -126,66 +119,25 @@
 
 ### 1. 数据流架构（重要）
 
-**PDF 导入流程**：
+**文档导入流程**：
 ```
-用户上传 PDF → MinerU API 解析 → 清洗 → VLM 图片描述 → 混合切分 → Embedding → Qdrant 存储
+本地 PDF/DOCX → MinerU 精准解析 → Markdown + JSON + images → 清洗 → VLM 图片语义（并行）→ 语义切分 → Embedding → Chroma + BM25
 ```
 
 **RAG 问答流程**：
 ```
-用户提问 → Query 改写 → Qdrant 检索 → Rerank → LLM 生成 → 流式返回
+用户提问 → 三源加权冻结（prompt/selection/written_context）→ 检索决策 → Dense + BM25 + RRF 融合 → LLM 流式生成 → 引用标注 → SSE 返回
 ```
 
-### 2. 切分策略（核心）
+### 2. 后端三层架构
 
-| 条件 | 处理方式 |
-|------|----------|
-| 两个语义块 ≤ 32k | 打包一起，一次 API 请求 |
-| 超过 32k，单个都不超过 | 分开，不用重叠 |
-| 超过 32k，单个也超过 | 平均切分到 24k，首尾重叠接近 32k |
+后端分三层，每层职责明确、互不穿透：
 
-### 3. 抽象接口（可替换）
-
-```python
-# VLMClient - 图片描述
-class VLMClient(ABC):
-    async def describe_image(image_path, prompt) -> str: ...
-
-# LLMClient - 聊天对话
-class LLMClient(ABC):
-    async def chat(messages) -> str: ...
-    async def chat_stream(messages): ...
-
-# EmbeddingClient - 向量化
-class EmbeddingClient(ABC):
-    async def embed(texts) -> list[list[float]]: ...
-    async def embed_single(text) -> list[float]: ...
-
-# RerankClient - 重排序
-class RerankClient(ABC):
-    async def rerank(query, documents, top_k) -> list[tuple[int, float]]: ...
-
-# 当前实现：KimiVLMClient, KimiLLMClient, SiliconFlowEmbeddingClient, SiliconFlowRerankClient
-# 未来可替换为：OpenAI、Azure、其他
-```
-
-### 4. 前后端边界
-
-- **前端**：只负责交互、状态管理、数据展示
-- **后端**：所有业务逻辑、数据处理、外部服务调用
-
-### 5. 分布式架构决策
-
-**为什么选分布式（每篇论文一个 Collection）？**
-
-| 需求 | 集中式 | 分布式 |
-|------|--------|--------|
-| 频繁更新/删除 | ❌ 复杂（按 id 删点） | ✅ 简单（删 collection） |
-| 论文数量 ≥ 2000 | ❌ 单 collection 过大 | ✅ 天然隔离 |
-| 多模态资源 | ❌ 混在一起 | ✅ 按类型隔离 |
-| 知识图谱扩展 | ❌ 需要重构 | ✅ Collection 作为节点 |
-
-**最终选择：分布式**
+| 层 | 核心职责 | 不负责什么 |
+|---|---|---|
+| **data_layer** | 文档预处理、清洗、结构化、向量化、混合检索、原文锚点 | 不负责对话编排，不直接暴露 HTTP |
+| **agent_layer** | 会话、缓存、输入加权、检索决策、reflection、回答生成、compact | 不直接处理底层文件解析，不直接承载 API 协议 |
+| **service_layer** | API、SSE、配置、启动、健康检查、日志、依赖装配 | 不承载业务推理，不直接写检索和总结策略 |
 
 ---
 
@@ -205,11 +157,11 @@ uv run python main.py
 # 或直接用 uvicorn
 uv run uvicorn app.main:app --reload
 
-# 单元测试（纯逻辑，无外部依赖）
-uv run pytest tests/unit/ -v
+# 单元测试（按层运行）
+uv run pytest tests/agent_layer/unit tests/data_layer/unit tests/service_layer/unit -v
 
-# 集成测试（需真实 API）
-uv run pytest tests/integration/ -v -s
+# 集成测试（需真实 API key）
+uv run pytest tests/data_layer/integration -v -s
 
 # 全部测试
 uv run pytest tests/ -v
@@ -218,15 +170,12 @@ uv run pytest tests/ -v
 ### 测试目录规范
 
 ```
-tests/
-├── unit/          # 单元测试（每次提交）
-├── integration/   # 集成测试（合并前/手动）
-├── fixtures/      # 测试输入（只读）
-├── output/        # 测试产出（.gitignore）
-└── _legacy/       # 旧代码（不运行）
+backend/test_backend/    # 后端测试（单元/集成/e2e/soak）
+frontend/test_frontend/  # 前端测试（组件/store/service）
+tests/                   # 前后端联调测试（E2E / API 契约）
 ```
 
-详细规范见 `backend/tests/README.md`。
+详细规范见 `backend/test_backend/README.md`。
 
 ### 前端
 
@@ -247,30 +196,37 @@ pnpm build
 
 ## 配置管理
 
-所有配置通过 `.env` 文件管理：
+所有配置通过 `.env` 文件管理（参见 `backend/.env.example`）：
 
 ```env
-# Kimi Coding API（VLM + LLM）
-KIMI_API_KEY=your_key
-KIMI_BASE_URL=https://api.kimi.com/coding/v1
+# LLM 服务（provider-neutral）
+LLM_API_KEY=your_key
+LLM_BASE_URL=https://api.example.com/v1
+LLM_MODEL=model-name
 
-# 硅基流动（Embedding + Rerank）
-SILICONFLOW_API_KEY=your_key
-
-# 固定模型契约（不可更改）
-EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B
+# Embedding 服务
+EMBEDDING_API_KEY=your_key
+EMBEDDING_BASE_URL=https://api.example.com/v1
+EMBEDDING_MODEL=model-name
 EMBEDDING_DIMENSIONS=1536
-RERANK_MODEL=Qwen/Qwen3-Reranker-8B
 
-# 切分策略参数
-CHUNK_MAX_CONTEXT=32000
-CHUNK_TARGET_SIZE=24000
-CHUNK_OVERLAP_BUFFER=8000
+# MinerU PDF 解析
+MINERU_API_KEY=your_key
+
+# VLM 图片理解
+VLM_API_KEY=your_key
+VLM_BASE_URL=https://api.example.com/v1
+VLM_MODEL=model-name
+
+# 反思模型（可选，不配则用主模型）
+REFLECTION_API_KEY=your_key
+REFLECTION_MODEL=model-name
 ```
 
 **配置约束**：
-- 更换 Embedding/Rerank 模型会导致向量库失效，需要重建索引
-- 这些是"系统硬约束"，防止模型漂移污染索引
+- 所有供应商信息通过环境变量注入，不在代码中硬编码
+- 更换 Embedding 模型会导致向量库失效，需要重建索引
+- 运行态缓存默认使用进程内内存，无需外部服务
 
 ---
 
@@ -309,15 +265,15 @@ grep -r "🔮 未来扩展" app/
 
 ### 已修复
 - [x] PDF 解析：从本地 PyMuPDF 改为 MinerU API
-- [x] 向量库：从 zvec（RocksDB）改为 Chromadb（SQLite），根治 Windows 锁问题
-- [x] Redis 依赖：移除 Redis，对话历史迁移到 SQLite
-- [x] 切分策略：实现混合语义切分
-- [x] VLM/LLM 接口：添加抽象层，可替换实现
+- [x] 向量库：从 zvec（RocksDB）改为 ChromaDB（SQLite），根治 Windows 锁问题
+- [x] Redis 依赖：移除 Redis，运行态缓存改为进程内内存
+- [x] 切分策略：实现基于嵌入向量的语义切分（非固定 token 切分）
+- [x] 探针/路由：删除 probe/ 和 routing（MinerU 直接处理所有格式）
+- [x] 架构重构：从混合态迁移到三层结构（data_layer / agent_layer / service_layer）
+- [x] SSE 协议：切换到 thinking/block/sources/done/error
+- [x] ContentBlock：实现结构化回答块（paragraph/heading/list/table/code/divider/citation）
+- [x] 输入加权：三种输入源冻结 + 四种起手权重
 - [x] RRF 融合：Dense + BM25 融合检索
-- [x] 导入备份：每阶段持久化，支持断点续传
-- [x] PDF 引用跳转：WPS API 打开 PDF
-- [x] 自动标题生成：LLM 生成对话标题
-- [x] 容灾降级：错误分类、重试策略、VLM 降级
 
 ### 待完成
 - [ ] 用户自选文献功能（接口已预留）

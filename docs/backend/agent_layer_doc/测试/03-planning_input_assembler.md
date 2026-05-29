@@ -16,6 +16,6 @@
 ## ClaudeCode 执行要求
 
 - 测试文件建议：
-  - `backend/tests/agent_layer/planning/test_snapshot_builder.py`
-  - `backend/tests/agent_layer/planning/test_retrieval_gate.py`
+  - `backend/test_backend/agent_layer/planning/test_snapshot_builder.py`
+  - `backend/test_backend/agent_layer/planning/test_retrieval_gate.py`
 - `PLN-U01` 是必须先固化的红灯用例。

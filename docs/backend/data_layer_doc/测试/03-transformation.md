@@ -13,7 +13,7 @@
 6. `TRANS-C04`：Route E 真实样本必须进入 OCR/降级链路；当前“不支持”应先被测试固定为失败基线。
 
 ## ClaudeCode 执行要求
-- 测试文件建议：`backend/tests/data_layer/transformation/test_pdf_converter.py`
-- 输出 artifacts 建议保存在 `backend/tests/_artifacts/data_layer/transformation/<sample_name>/`
+- 测试文件建议：`backend/test_backend/data_layer/transformation/test_pdf_converter.py`
+- 输出 artifacts 建议保存在 `backend/test_backend/_artifacts/data_layer/transformation/<sample_name>/`
 - 真实样本至少覆盖中英文各 2 份，不允许只用中文样本得出结论。
 

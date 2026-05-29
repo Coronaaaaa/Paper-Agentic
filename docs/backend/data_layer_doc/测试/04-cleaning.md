@@ -11,6 +11,6 @@
 4. `CLEAN-C02`：修复后要求 cleaning 同时产出 structured payload；当前应先把“structured 缺失”固化为失败用例。
 
 ## ClaudeCode 执行要求
-- 测试文件建议：`backend/tests/data_layer/cleaning/test_markdown_cleaner.py`
+- 测试文件建议：`backend/test_backend/data_layer/cleaning/test_markdown_cleaner.py`
 - 真实链路测试不要直接读取手工构造 markdown；必须至少复用 transformation 真实产物。
 

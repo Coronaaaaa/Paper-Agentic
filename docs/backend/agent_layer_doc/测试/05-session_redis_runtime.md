@@ -19,6 +19,6 @@
 ## ClaudeCode 执行要求
 
 - 测试文件建议：
-  - `backend/tests/agent_layer/session/test_redis_runtime.py`
-  - `backend/tests/agent_layer/session/test_query_window_integration.py`
+  - `backend/test_backend/agent_layer/session/test_redis_runtime.py`
+  - `backend/test_backend/agent_layer/session/test_query_window_integration.py`
 - 禁止用 fake redis 替代真实 Redis。

@@ -19,6 +19,6 @@
 ## ClaudeCode 执行要求
 
 - 测试文件建议：
-  - `backend/tests/service_layer/bootstrap/test_container.py`
-  - `backend/tests/service_layer/bootstrap/test_health_agent_flags.py`
+  - `backend/test_backend/service_layer/bootstrap/test_container.py`
+  - `backend/test_backend/service_layer/bootstrap/test_health_agent_flags.py`
 - `BTS-U01` 需要保留为回归用例，防止旧路径再次回流。

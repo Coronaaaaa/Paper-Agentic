@@ -314,6 +314,22 @@ watch(() => store.status, (s) => {
   font-size: 13px;
 }
 
+.paper-search-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  background: var(--color-surface-base);
+  outline: none;
+  margin-bottom: 8px;
+}
+
+.paper-search-input:focus {
+  border-color: var(--color-accent);
+}
+
 .paper-list {
   display: flex;
   flex-direction: column;

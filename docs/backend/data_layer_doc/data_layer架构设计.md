@@ -1,5 +1,9 @@
 # data_layer 架构设计
 
+> 身份：data_layer 活动设计稿
+> 最后更新：2026-05-29
+> 下次审查：代码变更时
+
 ## 1. 文档定位
 
 这份文档是 data_layer 层的唯一活动架构文档。
@@ -21,19 +25,21 @@
 ```text
 data_layer/
 ├── preprocessing/          # 预处理层
-│   ├── probe/                      # ① 探针：PDF 特征检测
-│   ├── transfer/                   # ② 路由 + 调度：engine + scheduler
-│   ├── transformation/             # ③ 转换：PDF → markdown + json + 图片
-│   ├── cleaning/                   # ④ 清洗：格式规范化、去噪
-│   ├── vlm_understanding/          # ⑤ VLM：图片/表单/公式语义理解
-│   ├── chunking/                   # ⑥ 切分：语义切分 + 锚点生成
+│   ├── transfer/                   # ① 调度中枢：pipeline engine + scheduler
+│   ├── transformation/             # ② 转换：PDF → markdown + json + 图片
+│   ├── cleaning/                   # ③ 清洗：格式规范化、去噪
+│   ├── vlm_understanding/          # ④ VLM：图片/表单/公式语义理解
+│   ├── chunking/                   # ⑤ 切分：语义切分 + 锚点生成
 │   └── monitor/                    # 监控：进度、日志、耗时
 │
-├── storage/               # 持久化层
+├── indexing/               # 索引层
 │   ├── embedding/                  # 向量化：文本 → 向量
+│   └── chroma_store/               # 向量库：增删改查 + 软删除
+│
+├── storage/                # 持久化层
 │   ├── config/                     # 配置：读取用户/系统配置
-│   ├── chroma_store/               # 向量库：增删改查 + 软删除
 │   ├── file_management/            # 文件管理：PDF/图片/产物目录
+│   ├── sqlite_runtime/             # 运行时数据库：library/conversation/import_task repo
 │   └── monitor/                    # 监控：延迟、存储健康、日志
 │
 └── retrieval/                      # 检索层
@@ -58,17 +64,25 @@ data_layer/
                               │ 读取索引          │
                               ▼                  │
                    ┌──────────────────────┐      │
-                   │   storage   │      │
-                   │  embedding + chroma  │      │
-                   │  + file_management   │      │
+                   │      indexing         │      │
+                   │  embedding +          │      │
+                   │  chroma_store         │      │
                    └──────────┬───────────┘      │
                               │ 读取产物文件      │
                               ▼                  │
                    ┌──────────────────────┐      │
-                   │ preprocessing│      │
-                   │  probe → transfer →  │      │
-                   │  transform → clean → │      │
-                   │  vlm → chunk         │      │
+                   │      storage          │      │
+                   │  config +             │      │
+                   │  file_management +    │      │
+                   │  sqlite_runtime       │      │
+                   └──────────┬───────────┘      │
+                              │ 读取产物文件      │
+                              ▼                  │
+                   ┌──────────────────────┐      │
+                   │    preprocessing      │      │
+                   │  transfer →           │      │
+                   │  transform → clean →  │      │
+                   │  vlm → chunk          │      │
                    └──────────────────────┘      │
                               │                   │
                               ▼                   │
@@ -77,8 +91,8 @@ data_layer/
 
 ### 核心设计原则
 
-1. **层间隔离**：三层各有各的 IO，不共享 Python 类型。层间传递靠数据格式（文件/JSON/ChromaDB）。
-2. **故障隔离**：预处理炸了，持久化里有数据，检索照样跑。
+1. **层间隔离**：四层各有各的 IO，不共享 Python 类型。层间传递靠数据格式（文件/JSON/ChromaDB）。
+2. **故障隔离**：预处理炸了，索引和检索照样跑。
 3. **每层自监控**：monitor 子模块贯穿每层。
 4. **transfer 是预处理层的调度中枢**：类似 Scrapy 的 engine + scheduler 复合体。
 
@@ -86,51 +100,9 @@ data_layer/
 
 ## 3. 预处理层详细设计
 
-### 3.1 probe/
-
-**职责**：对 PDF 做轻量特征检测，输出特征类型。
-
-**输入**：
-- PDF 文件路径（支持批量）
-
-**输出**：
-- ProbeResult：PDF 特征数据
-
-**ProbeResult 字段**：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| page_count | int | 页数 |
-| has_text_layer | bool | 是否有文字层 |
-| text_density | float | 每页平均字符数 |
-| is_scan_like | bool | 是否疑似扫描件 |
-| has_images | bool | 是否有图片 |
-| image_count | int | 图片数量 |
-| has_form_fields | bool | 是否有表单字段 |
-| form_field_count | int | 表单字段数量 |
-| has_formula_signals | bool | 是否有公式信号 |
-| formula_signal_score | float | 公式信号强度 0-1 |
-| has_table_signals | bool | 是否有表格信号 |
-| table_signal_score | float | 表格信号强度 0-1 |
-| doc_complexity_level | str | simple / moderate / complex |
-
-**检测手段**：
-
-| 检测项 | 工具 | 方法 |
-|---|---|---|
-| 文字层 | pypdf | extract_text()，总字符 > 100 = 有文字层 |
-| 文字密度 | pypdf | 总字符 / 页数 |
-| 扫描件 | pypdf | text_density < 50 且 page_count > 2 |
-| 图片 | pdfplumber | page.images 计数 |
-| 表单字段 | pypdf | reader.get_fields() |
-| 公式信号 | pdfplumber + 正则 | 数学符号密度 + LaTeX 痕迹 + 公式关键词 |
-| 表格信号 | pdfplumber + 正则 | 表格关键词 + 列对齐检测 |
-
-**参考实现**：`reference/external/anthropic-skills/pdf/scripts/`
-
 ---
 
-### 3.2 transfer/
+### 3.1 transfer/
 
 **职责**：预处理层的调度中枢。接收 probe 输出，决定路由，编排整个 pipeline。
 
@@ -219,7 +191,7 @@ queued → probing → routing → transforming → cleaning/vlm_enriching → c
   - 后续运行直接读取已校准值
 - **批量处理**：支持批量 PDF 输入，进程池并发转换
 
-**实现参考**：`backend/tests/UnitTesting-Docling&&Anthropic'sPDF&DOCX/test_pdf_router.py`
+**实现参考**：`backend/test_backend/UnitTesting-Docling&&Anthropic'sPDF&DOCX/test_pdf_router.py`
 
 ---
 

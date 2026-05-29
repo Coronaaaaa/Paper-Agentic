@@ -12,7 +12,7 @@
 
 ## ClaudeCode 执行要求
 - 测试文件建议：
-  - `backend/tests/data_layer/file_management/test_directory_manager.py`
-  - `backend/tests/data_layer/monitor/test_storage_monitor.py`
+  - `backend/test_backend/data_layer/file_management/test_directory_manager.py`
+  - `backend/test_backend/data_layer/monitor/test_storage_monitor.py`
 - 真实链路产物要来自前置模块测试，不要人工造最小 JSON 冒充全流程结果。
 

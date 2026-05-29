@@ -28,7 +28,7 @@
 ## ClaudeCode 执行要求
 
 - 测试文件建议：
-  - `backend/tests/integration/test_frontend_query_contract.py`
-  - `backend/tests/integration/test_frontend_history_contract.py`
-  - `backend/tests/integration/test_models_contract.py`
+  - `backend/test_backend/integration/test_frontend_query_contract.py`
+  - `backend/test_backend/integration/test_frontend_history_contract.py`
+  - `backend/test_backend/integration/test_models_contract.py`
 - `FED-C01` 建议直接复用前端的 SSE 解析规则或复制同构解析器，避免“后端自证自己正确”。

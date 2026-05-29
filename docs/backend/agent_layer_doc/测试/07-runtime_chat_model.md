@@ -15,6 +15,6 @@
 ## ClaudeCode 执行要求
 
 - 测试文件建议：
-  - `backend/tests/agent_layer/runtime/test_chat_model_boot.py`
-  - `backend/tests/agent_layer/runtime/test_chat_model_request_level.py`
+  - `backend/test_backend/agent_layer/runtime/test_chat_model_boot.py`
+  - `backend/test_backend/agent_layer/runtime/test_chat_model_request_level.py`
 - 若使用真实 provider，请记录模型名、首 token 延迟和总耗时到 artifacts。

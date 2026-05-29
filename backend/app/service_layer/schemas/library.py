@@ -12,6 +12,7 @@ class LibraryItemOut(BaseModel):
     file_path: str
     file_hash: str
     authors: str = ""
+    year: int | None = None
     file_size: int | None = None
     chunk_count: int = 0
     total_pages: int | None = None
@@ -48,6 +49,7 @@ class PaperItemOut(BaseModel):
     paper_id: str
     title: str
     authors: str = ""
+    year: int | None = None
     file_path: str
     file_hash: str = ""
     chunk_count: int = 0

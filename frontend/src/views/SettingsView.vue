@@ -243,6 +243,34 @@ function formatTime(iso: string): string {
   color: var(--color-text-muted);
 }
 
+.library-filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-input {
+  flex: 1;
+  min-width: 120px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  background: var(--color-surface-base);
+  outline: none;
+}
+
+.filter-input:focus {
+  border-color: var(--color-accent);
+}
+
+.filter-year {
+  flex: 0 0 80px;
+  min-width: 80px;
+}
+
 .settings-field {
   margin-bottom: 12px;
 }

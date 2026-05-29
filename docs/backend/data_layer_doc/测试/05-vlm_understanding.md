@@ -11,6 +11,6 @@
 5. `VLM-C02`：修复后验证 markdown 回填、`visual_blocks`、`parent_anchor` 生成。
 
 ## ClaudeCode 执行要求
-- 测试文件建议：`backend/tests/data_layer/vlm/test_vlm_processor.py`
+- 测试文件建议：`backend/test_backend/data_layer/vlm/test_vlm_processor.py`
 - 若真实 API 未配置，`VLM-C01/C02` 必须标记为 `blocked` 并输出阻塞原因，不得用 mock 代替“链路通过”。
 

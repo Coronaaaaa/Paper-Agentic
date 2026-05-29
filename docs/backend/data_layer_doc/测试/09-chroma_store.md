@@ -12,8 +12,8 @@
 
 ## ClaudeCode 执行要求
 - 测试文件建议：
-  - `backend/tests/data_layer/chroma_store/test_soft_delete.py`
-  - `backend/tests/data_layer/chroma_store/test_keyword_index.py`
-  - `backend/tests/data_layer/chroma_store/test_vector_index.py`
+  - `backend/test_backend/data_layer/chroma_store/test_soft_delete.py`
+  - `backend/test_backend/data_layer/chroma_store/test_keyword_index.py`
+  - `backend/test_backend/data_layer/chroma_store/test_vector_index.py`
 - `STORE-I01` 不能只用假向量；至少要接一次真实 embedding 产物。
 

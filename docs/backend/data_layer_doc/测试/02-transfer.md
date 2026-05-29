@@ -12,7 +12,7 @@
 5. `TRANSFER-C03`：选 1 份 E 路由真实样本，当前应复现 OCR unsupported；修复后应验证降级或 OCR 输出路径。
 
 ## ClaudeCode 执行要求
-- 测试文件建议：`backend/tests/data_layer/transfer/test_pipeline.py`
+- 测试文件建议：`backend/test_backend/data_layer/transfer/test_pipeline.py`
 - Route B/C/D/E 用例在修复前允许红灯，但不允许直接 `xfail` 永久跳过。
 - 真链路回归时要把 `PipelineState.events` 落盘，便于比对 monitor 行为。
 

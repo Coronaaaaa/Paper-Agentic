@@ -13,9 +13,9 @@
 
 ## ClaudeCode 执行要求
 - 测试文件建议：
-  - `backend/tests/data_layer/retrieval/test_dense_retriever.py`
-  - `backend/tests/data_layer/retrieval/test_sparse_retriever.py`
-  - `backend/tests/data_layer/retrieval/test_rrf_fusion.py`
-  - `backend/tests/data_layer/retrieval/test_retrieval_chain.py`
+  - `backend/test_backend/data_layer/retrieval/test_dense_retriever.py`
+  - `backend/test_backend/data_layer/retrieval/test_sparse_retriever.py`
+  - `backend/test_backend/data_layer/retrieval/test_rrf_fusion.py`
+  - `backend/test_backend/data_layer/retrieval/test_retrieval_chain.py`
 - 真检索回归必须在真实中英文论文上完成，不允许只对手工短文本做断言。
 

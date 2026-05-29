@@ -16,6 +16,6 @@
 ## ClaudeCode 执行要求
 
 - 测试文件建议：
-  - `backend/tests/agent_layer/hooks/test_compact.py`
-  - `backend/tests/agent_layer/hooks/test_compact_integration.py`
+  - `backend/test_backend/agent_layer/hooks/test_compact.py`
+  - `backend/test_backend/agent_layer/hooks/test_compact_integration.py`
 - `CMP-C01` 需要真模型；若未配置，标记 `blocked`。

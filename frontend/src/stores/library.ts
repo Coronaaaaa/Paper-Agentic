@@ -28,6 +28,9 @@ export const useLibraryStore = defineStore('library', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
   const searchQuery = ref('')
+  const filterAuthors = ref('')
+  const filterYearFrom = ref<number | null>(null)
+  const filterYearTo = ref<number | null>(null)
   const selectedPaperIds = ref<string[]>([])
 
   const importing = ref(false)
@@ -39,16 +42,29 @@ export const useLibraryStore = defineStore('library', () => {
   let lastProgressSignature = ''
 
   const filteredPapers = computed(() => {
-    if (!searchQuery.value.trim()) return papers.value
-    const q = searchQuery.value.toLowerCase()
-    return papers.value.filter(
-      (paper) =>
-        paper.title.toLowerCase().includes(q) ||
-        paper.authors.toLowerCase().includes(q),
-    )
+    let result = papers.value
+
+    const q = searchQuery.value.trim().toLowerCase()
+    if (q) {
+      result = result.filter((paper) => paper.title.toLowerCase().includes(q))
+    }
+
+    const a = filterAuthors.value.trim().toLowerCase()
+    if (a) {
+      result = result.filter((paper) => paper.authors.trim().toLowerCase() === a)
+    }
+
+    if (filterYearFrom.value !== null) {
+      result = result.filter((paper) => paper.year !== null && paper.year >= filterYearFrom.value!)
+    }
+    if (filterYearTo.value !== null) {
+      result = result.filter((paper) => paper.year !== null && paper.year <= filterYearTo.value!)
+    }
+
+    return result
   })
 
-  const paperCount = computed(() => papers.value.length)
+  const paperCount = computed(() => filteredPapers.value.length)
   const selectedPaperCount = computed(() => selectedPaperIds.value.length)
 
   async function loadPapers() {
@@ -274,6 +290,9 @@ export const useLibraryStore = defineStore('library', () => {
     loading,
     error,
     searchQuery,
+    filterAuthors,
+    filterYearFrom,
+    filterYearTo,
     selectedPaperIds,
     filteredPapers,
     paperCount,

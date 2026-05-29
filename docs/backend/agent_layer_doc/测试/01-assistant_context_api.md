@@ -15,5 +15,5 @@
 ## ClaudeCode 执行要求
 
 - 测试文件建议：
-  - `backend/tests/agent_layer/test_assistant_context_api.py`
+  - `backend/test_backend/agent_layer/test_assistant_context_api.py`
 - `CTX-C01` 必须走真实 Redis，不允许 monkeypatch 存储对象。

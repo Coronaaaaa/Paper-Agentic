@@ -1,4 +1,8 @@
-# agent_layer 架构设计
+﻿# agent_layer 架构设计
+
+> 身份：agent_layer 活动设计稿
+> 最后更新：2026-05-29
+> 下次审查：代码变更时
 
 ## 1. 文档定位
 
@@ -21,13 +25,15 @@
 
 当前 `agent_layer` 处于“有骨架、无主链”的混合态。
 
-已存在的目录只有：
+已存在的目录有：
 
+- `contracts/`
+- `hooks/`
+- `orchestration/`
 - `planning/`
 - `response/`
 - `runtime/`
 - `session/`
-- `hooks/`
 
 但这并不代表 Agent 层已经成立，原因是：
 

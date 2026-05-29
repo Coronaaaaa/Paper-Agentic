@@ -20,7 +20,7 @@ datasets/
 
 ### 集成测试
 
-`backend/tests/data_layer/integration/` 中的测试会自动扫描本目录。
+`backend/test_backend/data_layer/integration/` 中的测试会自动扫描本目录。
 
 ### 批量导入
 

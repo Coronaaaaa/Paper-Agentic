@@ -26,6 +26,12 @@ from app.data_layer.preprocessing.transfer.pipeline import (
 )
 from app.data_layer.indexing.chroma_store.soft_delete import SoftDeleteManager
 
+import os
+requires_mineru = pytest.mark.skipif(
+    not os.environ.get("MINERU_API_KEY") and not os.environ.get("MINERU_TOKEN"),
+    reason="需要 MINERU_API_KEY 环境变量",
+)
+
 
 def _make_service(tmp_dir, **overrides):
     """构造 PipelineOrchestrator 实例"""
@@ -72,6 +78,7 @@ def _mock_chunk(anchor_id="a1", page=1, content="test content"):
 class TestDocU01:
     """PDF 格式限制"""
 
+    @requires_mineru
     @pytest.mark.asyncio
     async def test_pdf_passes_format_check(self, tmp_dir):
         """PDF 文件通过格式检查，进入 pipeline"""

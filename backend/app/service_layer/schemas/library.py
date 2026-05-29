@@ -6,29 +6,27 @@ from pydantic import BaseModel, Field
 
 
 class LibraryItemOut(BaseModel):
-    library_item_id: str
-    kind: str
+    item_id: str
     title: str
     file_path: str
-    file_hash: str
+    file_hash: str = ""
+    file_type: str = ""
+    import_time: str = ""
+    page_count: int = 0
+    status: str = "ready"
     authors: str = ""
     year: int | None = None
-    file_size: int | None = None
     chunk_count: int = 0
-    total_pages: int | None = None
-    status: str = "completed"
-    import_time: str = ""
 
 
 class ImportTaskOut(BaseModel):
     task_id: str
     file_path: str
     status: str = "queued"
-    current_stage: str = "queued"
-    library_item_id: str | None = None
-    error_message: str | None = None
+    message: str = ""
     created_at: str = ""
-    updated_at: str = ""
+    paper_id: str = ""
+    completed_at: str = ""
 
 
 class ImportRequest(BaseModel):

@@ -369,7 +369,7 @@ class TurnRunner:
         if not dense_results and not sparse_results:
             return []
 
-        fused = rrf_fuse(dense_results, sparse_results, topk=topk or len(dense_results) + len(sparse_results), keyword_index=self._keyword_search)
+        fused = rrf_fuse(dense_results, sparse_results, topk=topk or len(dense_results) + len(sparse_results), keyword_index=self._keyword_search, rrf_k=rrf_k)
         return [
             {
                 "content": doc.content,

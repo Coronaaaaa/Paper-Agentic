@@ -18,8 +18,8 @@ logger = logging.getLogger("paper-assistant")
 
 # ── 阶段权重（进度百分比）──────────────────────────────────────
 _STAGE_WEIGHTS = {
-    "transformation": 25,
-    "vlm": 10,
+    "transforming": 25,
+    "vlm_enriching": 10,
     "cleaning": 10,
     "chunking": 15,
     "embedding": 20,
@@ -260,8 +260,8 @@ def _calc_percent(event_name: str, stage: str, data: dict) -> int:
 # ── 常量 ──────────────────────────────────────────────────────
 
 _STAGE_ORDER = [
-    "transformation",
-    "vlm",
+    "transforming",
+    "vlm_enriching",
     "cleaning",
     "chunking",
     "embedding",
@@ -269,8 +269,8 @@ _STAGE_ORDER = [
 ]
 
 _STAGE_LABELS = {
-    "transformation": "PDF 解析",
-    "vlm": "图片理解",
+    "transforming": "PDF 解析",
+    "vlm_enriching": "图片理解",
     "cleaning": "内容清洗",
     "chunking": "语义切分",
     "embedding": "向量化",

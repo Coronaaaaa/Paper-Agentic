@@ -44,11 +44,11 @@ class AppContainer:
                 llm_api_key = self.settings.reflection_api_key
                 llm_base_url = self.settings.reflection_base_url
                 llm_model = self.settings.reflection_model
-                llm_max_tokens = 2048
+                llm_max_tokens = self.settings.max_output_tokens
                 llm_temperature = self.settings.reflection_temperature
                 llm_timeout = self.settings.reflection_timeout
                 llm_fallback_models = ""
-                chunk_max_context = 8000
+                chunk_max_context = self.settings.context_window_tokens
 
             self.reflection_chat_model: ChatModel | None = ChatModel(_ReflectionSettings())
         else:

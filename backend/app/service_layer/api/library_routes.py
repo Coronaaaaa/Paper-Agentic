@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.data_layer.storage.sqlite_runtime._types import ImportTask, LibraryItem
+from app.data_layer.storage.sqlite_runtime._types import ImportTask, LibraryItem, utc_now_iso
 from app.service_layer.schemas.library import (
     ImportRequest,
     ImportResponse,
@@ -42,7 +42,7 @@ async def get_item(item_id: str, request: Request):
 @router.delete("/items/{item_id}")
 async def delete_item(item_id: str, request: Request):
     container = request.app.state.container
-    item = container.library_repo.get_by_id(item_id)
+    item = container.library_repo.get(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="文献不存在")
     container.document_ingest.delete_document(item_id)
@@ -92,7 +92,10 @@ async def _run_import(container, task_id: str, file_path: Path):
                 item_id=result.paper_id,
                 title=file_path.stem,
                 file_path=str(file_path),
+                file_hash=_compute_file_hash(file_path),
                 file_type=file_path.suffix.lower(),
+                import_time=utc_now_iso(),
+                page_count=result.chunk_count,
                 status="ready",
             ))
         else:

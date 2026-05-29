@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File as FastAPIFile
 from fastapi.responses import StreamingResponse
 
-from app.data_layer.storage.sqlite_runtime._types import ImportTask, LibraryItem
+from app.data_layer.storage.sqlite_runtime._types import ImportTask, LibraryItem, utc_now_iso
 from app.service_layer.schemas.library import ImportStartResponse, ImportStatusResponse
 
 logger = logging.getLogger("paper-assistant")
@@ -125,18 +125,7 @@ async def _run_import_with_progress(container, task_id: str, file_path: Path):
         container.import_task_repo.update_status(task_id, "running")
         await publish({"status": "running", "step": "starting", "paper_id": None})
 
-        from app.data_layer.preprocessing.transfer.pipeline import PipelineOrchestrator
-
-        orchestrator = PipelineOrchestrator(
-            monitor_callback=monitor.on_pipeline_event,
-            embedding_client=container.embedding_client,
-            vector_index=container.vector_store,
-            keyword_index=container.keyword_search,
-        )
-
-        result = await container.document_ingest.ingest_document(
-            file_path, pipeline_orchestrator=orchestrator,
-        )
+        result = await container.document_ingest.ingest_document(file_path)
 
         if result.success:
             container.import_task_repo.update_status(
@@ -146,7 +135,10 @@ async def _run_import_with_progress(container, task_id: str, file_path: Path):
                 item_id=result.paper_id,
                 title=file_path.stem,
                 file_path=str(file_path),
+                file_hash=_compute_file_hash(file_path),
                 file_type=file_path.suffix.lower(),
+                import_time=utc_now_iso(),
+                page_count=result.chunk_count,
                 status="ready",
             ))
             await publish({"status": "completed", "step": "done", "paper_id": result.paper_id})

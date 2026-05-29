@@ -21,6 +21,7 @@ def rrf_fuse(
     sparse_results: list,
     topk: int = 0,
     keyword_index=None,
+    rrf_k: int = 60,
 ) -> list[FusedDoc]:
     """RRF 融合 Dense + Sparse 检索结果，返回融合后 topk 的 FusedDoc 列表
 
@@ -56,8 +57,6 @@ def rrf_fuse(
     all_doc_ids = set(dense_map.keys()) | set(sparse_map.keys())
 
     # 计算融合分数
-    from app.service_layer.config.settings import get_settings
-    rrf_k = get_settings().retrieval_rrf_k
     fused_scores: dict[str, float] = {}
     for doc_id in all_doc_ids:
         score = 0.0

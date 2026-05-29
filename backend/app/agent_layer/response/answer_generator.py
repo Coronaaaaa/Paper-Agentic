@@ -114,6 +114,7 @@ class AnswerGenerator:
             sparse_results,
             topk=10,
             keyword_index=self._keyword_search,
+            rrf_k=self._settings.retrieval_rrf_k,
         )
         results: list[dict] = []
         for doc in fused:

@@ -1,13 +1,7 @@
-"""Markdown 清洗器
+"""Markdown 清洗器 — 数据驱动架构
 
-对 transformation 产出的 markdown 做格式清洗和规范化。
-
-基于真实 PDF 解析数据的问题修复：
-1. 表格残留：MarkItDown 会把排版密集页面转成 markdown 表格
-2. PUA 字符：Unicode 私有区字符（0xE000-0xF8FF）是字体编码遗留
-3. 全角英文字母/数字：PDF 解析器输出的全角字符
-4. 逐字拆行：某些 PDF 每个字符单独一行
-5. 过多空行：连续空行需要压缩
+通用引擎 + 纯数据规则，消除逐函数样板代码。
+新增规则只需加一行数据，无需写函数。
 """
 
 from __future__ import annotations
@@ -19,24 +13,10 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger("paper-assistant")
 
-# 乱码检测规则
-_GARBLED_PATTERN = re.compile(r"[\x00-\x08\x0e-\x1f]{3,}")
-_BREAK_NEWLINES = re.compile(r"\n{6,}")
-_BREAK_REPEAT = re.compile(r"([^\s\-\.=\*|_~#])\1{50,}")
 
-# 标题层级检测
-_HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
-
-# 表格残留检测
-_TABLE_SEPARATOR = re.compile(r"^\|[\s\-:]+\|[\s\-:]*\|", re.MULTILINE)
-_TABLE_ROW = re.compile(r"^\|.+\|$", re.MULTILINE)
-
-# PUA 字符（Unicode 私有区）
-_PUA_PATTERN = re.compile(r"[-]")
-
-# 页眉页脚噪音
-_PAGE_FOOTER = re.compile(r"^第\s*\d+\s*页\s*共\s*\d+\s*页\s*$", re.MULTILINE)
-
+# ═══════════════════════════════════════════════════════════════════════════════
+# 结果类型
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass(frozen=True)
 class CleaningResult:
@@ -46,232 +26,84 @@ class CleaningResult:
     logs: list[dict] = field(default_factory=list)
 
 
-def clean_markdown(markdown: str) -> CleaningResult:
-    """清洗 markdown 文本
+# ═══════════════════════════════════════════════════════════════════════════════
+# 规则数据类
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    Args:
-        markdown: 原始 markdown 文本
+@dataclass(frozen=True)
+class LineRule:
+    """行级过滤规则：匹配 → 删除整行"""
+    name: str
+    patterns: tuple[re.Pattern, ...]
+    limit: int | None = None       # 只检查前 N 行（None = 全文）
+    full: bool = False             # True=fullmatch, False=search
 
-    Returns:
-        CleaningResult
+
+@dataclass(frozen=True)
+class RegexRule:
+    """正则替换规则：pattern.subn → 替换"""
+    name: str
+    pattern: re.Pattern
+    repl: str | callable | None = None   # None = 删除匹配内容，callable = 动态替换
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 通用引擎
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _line_filter(text: str, rules: list[LineRule]) -> tuple[str, int]:
+    """单次遍历，批量执行所有行级过滤规则。
+
+    比逐函数 split/join 快 N 倍（N = 规则数）。
     """
-    logs: list[dict] = []
-    t0 = time.perf_counter()
-    original_length = len(markdown)
-
-    # 1. 去除 PUA 字符（Unicode 私有区：字体编码遗留）
-    markdown, pua_removed = _remove_pua_chars(markdown)
-    if pua_removed > 0:
-        logs.append(_log("info", f"去除 PUA 字符 {pua_removed} 处"))
-
-    # 2. 去除控制字符
-    markdown, control_removed = _remove_control_chars(markdown)
-    if control_removed > 0:
-        logs.append(_log("info", f"去除控制字符 {control_removed} 处"))
-
-    # 3. 修复乱码碎片
-    markdown, garbled_fixed = _fix_garbled_text(markdown)
-    if garbled_fixed > 0:
-        logs.append(_log("info", f"修复乱码碎片 {garbled_fixed} 处"))
-
-    # 4. 去除表格残留（MarkItDown 在排版密集页面产生的伪表格）
-    markdown, table_removed = _remove_table_residue(markdown)
-    if table_removed > 0:
-        logs.append(_log("info", f"去除表格残留 {table_removed} 行"))
-
-    # 5. 去除页眉页脚噪音
-    markdown, footer_removed = _remove_page_footers(markdown)
-    if footer_removed > 0:
-        logs.append(_log("info", f"去除页眉页脚 {footer_removed} 处"))
-
-    # 6. 统一全角半角（数字和英文字母）
-    markdown = _normalize_width(markdown)
-
-    # 7. 先压缩过多空行（为后续合并做准备）
-    markdown, empty_compressed = _compress_excessive_empty_lines(markdown)
-    if empty_compressed > 0:
-        logs.append(_log("info", f"压缩过多空行 {empty_compressed} 处"))
-
-    # 8. 合并逐字拆行（短行合并）
-    markdown, merged_lines = _merge_broken_lines(markdown)
-    if merged_lines > 0:
-        logs.append(_log("info", f"合并碎片行 {merged_lines} 处"))
-
-    # 8.5 合并极短碎片行（跨空行合并 ≤2 字符的行）
-    markdown, ultra_merged = _merge_ultra_short_lines(markdown)
-    if ultra_merged > 0:
-        logs.append(_log("info", f"合并极短碎片行 {ultra_merged} 处"))
-
-    # 9. 标准化换行（最终压缩）
-    markdown = _normalize_newlines(markdown)
-
-    # 9. 去除行尾空格
-    markdown = _remove_trailing_spaces(markdown)
-
-    # 10. 标准化标题层级
-    markdown, headings_normalized = _normalize_headings(markdown)
-    if headings_normalized > 0:
-        logs.append(_log("info", f"标准化标题层级 {headings_normalized} 处"))
-
-    # 11. 修复重复字符
-    markdown, repeat_fixed = _fix_repeated_chars(markdown)
-    if repeat_fixed > 0:
-        logs.append(_log("info", f"修复重复字符 {repeat_fixed} 处"))
-
-    # 统计
-    elapsed = round(time.perf_counter() - t0, 3)
-    stats = {
-        "original_length": original_length,
-        "cleaned_length": len(markdown),
-        "reduction_ratio": round(1 - len(markdown) / max(original_length, 1), 3),
-        "elapsed_ms": int(elapsed * 1000),
-    }
-
-    logs.append(_log("info", f"清洗完成，耗时 {elapsed}s"))
-
-    return CleaningResult(
-        markdown=markdown,
-        stats=stats,
-        logs=logs,
-    )
+    lines = text.split("\n")
+    result = []
+    removed = 0
+    for i, line in enumerate(lines):
+        s = line.strip()
+        matched = False
+        if s:
+            for rule in rules:
+                if rule.limit is not None and i >= rule.limit:
+                    continue
+                for p in rule.patterns:
+                    if (rule.full and p.fullmatch(s)) or (not rule.full and p.search(s)):
+                        matched = True
+                        break
+                if matched:
+                    break
+        if matched:
+            removed += 1
+        else:
+            result.append(line)
+    return "\n".join(result), removed
 
 
-def clean_mineru_output(markdown: str, metadata: dict | None = None) -> CleaningResult:
-    """MinerU 输出的专用清洗（21 步流水线）
-
-    Args:
-        markdown: MinerU 输出的 markdown
-        metadata: MinerU 输出的 JSON 元数据（可选，content_list 用于辅助目录检测）
-    """
-    logs: list[dict] = []
-    t0 = time.perf_counter()
-    original_length = len(markdown)
-
-    # 1. 移除封面元数据 + 学术元数据
-    markdown, cover_removed = _remove_cover_metadata(markdown)
-    if cover_removed > 0:
-        logs.append(_log("info", f"移除封面/学术元数据 {cover_removed} 行"))
-
-    # 2. 清理 HTML 表格标签
-    markdown, html_table_removed = _strip_html_table_tags(markdown)
-    if html_table_removed > 0:
-        logs.append(_log("info", f"清理 HTML 表格标签 {html_table_removed} 处"))
-
-    # 3. 移除期刊平台 UI 元素
-    markdown, journal_ui_removed = _remove_journal_ui(markdown)
-    if journal_ui_removed > 0:
-        logs.append(_log("info", f"移除期刊平台 UI {journal_ui_removed} 行"))
-
-    # 4. 移除版权声明 / 免责声明
-    markdown, watermark_removed = _remove_watermarks(markdown)
-    if watermark_removed > 0:
-        logs.append(_log("info", f"移除版权声明 {watermark_removed} 行"))
-
-    # 5. 移除期刊头（中点包裹的期刊名）
-    markdown, journal_removed = _remove_journal_header(markdown)
-    if journal_removed > 0:
-        logs.append(_log("info", f"移除期刊头 {journal_removed} 行"))
-
-    # 6. 移除点状目录
-    markdown, toc_removed = _remove_toc_section(markdown)
-    if toc_removed > 0:
-        logs.append(_log("info", f"移除点状目录 {toc_removed} 行"))
-
-    # 7. 移除无点状目录（政府文档等）
-    markdown, toc2_removed = _remove_non_dot_leader_toc(markdown, metadata)
-    if toc2_removed > 0:
-        logs.append(_log("info", f"移除无点状目录 {toc2_removed} 行"))
-
-    # 8. 移除 CNKI 水印
-    markdown, cnki_removed = _remove_cnki_watermark(markdown)
-    if cnki_removed > 0:
-        logs.append(_log("info", f"移除 CNKI 水印 {cnki_removed} 处"))
-
-    # 9. 移除作者简介块
-    markdown, bio_removed = _remove_author_bio(markdown)
-    if bio_removed > 0:
-        logs.append(_log("info", f"移除作者简介 {bio_removed} 处"))
-
-    # 10. 移除封面机构行
-    markdown, inst_removed = _remove_institution_lines(markdown)
-    if inst_removed > 0:
-        logs.append(_log("info", f"移除封面机构行 {inst_removed} 行"))
-
-    # 11. 移除页眉页脚
-    markdown, footer_removed = _remove_page_footers(markdown)
-    if footer_removed > 0:
-        logs.append(_log("info", f"去除页眉页脚 {footer_removed} 处"))
-
-    # 12. 移除英文页眉页脚
-    markdown, en_footer_removed = _remove_en_header_footer(markdown)
-    if en_footer_removed > 0:
-        logs.append(_log("info", f"移除英文页眉页脚 {en_footer_removed} 处"))
-
-    # 13. 移除 OCR 中文空格（连续 3+ CJK 字符间的空格）
-    markdown, ocr_fixed = _remove_ocr_spaces_in_chinese(markdown)
-    if ocr_fixed > 0:
-        logs.append(_log("info", f"修复 OCR 中文空格 {ocr_fixed} 处"))
-
-    # 14. 修复标题内空格
-    markdown, heading_fixed = _fix_heading_spaces(markdown)
-    if heading_fixed > 0:
-        logs.append(_log("info", f"修复标题内空格 {heading_fixed} 处"))
-
-    # 15. 修复英文标题逐字母空格
-    markdown, en_heading_fixed = _fix_heading_spaces_english(markdown)
-    if en_heading_fixed > 0:
-        logs.append(_log("info", f"修复英文标题空格 {en_heading_fixed} 处"))
-
-    # 16. 移除裸图片引用
-    markdown, bare_img_removed = _remove_bare_images(markdown)
-    if bare_img_removed > 0:
-        logs.append(_log("info", f"移除裸图片引用 {bare_img_removed} 处"))
-
-    # 17. 移除表格占位符
-    markdown, table_ph_removed = _remove_table_placeholders(markdown)
-    if table_ph_removed > 0:
-        logs.append(_log("info", f"移除表格占位符 {table_ph_removed} 处"))
-
-    # 18. 空行压缩
-    markdown, empty_compressed = _compress_excessive_empty_lines(markdown)
-    if empty_compressed > 0:
-        logs.append(_log("info", f"压缩过多空行 {empty_compressed} 处"))
-
-    # 19. 标题层级标准化
-    markdown, headings_normalized = _normalize_headings(markdown)
-    if headings_normalized > 0:
-        logs.append(_log("info", f"标准化标题层级 {headings_normalized} 处"))
-
-    # 20. 修复 URL 中的空格
-    markdown, url_fixed = _fix_url_spaces(markdown)
-    if url_fixed > 0:
-        logs.append(_log("info", f"修复 URL 空格 {url_fixed} 处"))
-
-    # 21. 行尾空格
-    markdown = _remove_trailing_spaces(markdown)
-
-    elapsed = round(time.perf_counter() - t0, 3)
-    stats = {
-        "original_length": original_length,
-        "cleaned_length": len(markdown),
-        "reduction_ratio": round(1 - len(markdown) / max(original_length, 1), 3),
-        "elapsed_ms": int(elapsed * 1000),
-        "mode": "mineru",
-    }
-
-    logs.append(_log("info", f"MinerU 清洗完成，耗时 {elapsed}s"))
-
-    return CleaningResult(
-        markdown=markdown,
-        stats=stats,
-        logs=logs,
-    )
+def _regex_subs(text: str, rules: list[RegexRule]) -> tuple[str, int]:
+    """批量执行正则替换规则。"""
+    total = 0
+    for rule in rules:
+        text, n = rule.pattern.subn(rule.repl or "", text)
+        total += n
+    return text, total
 
 
-# ── MinerU 专用清洗函数 ─────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 正则模式常量
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# 封面元数据模式（含学术元数据）
-_COVER_META_PATTERNS = [
+# ── 通用 ─────────────────────────────────────────────────────────────────────
+
+_GARBLED_RE = re.compile(r"[\x00-\x08\x0e-\x1f]{3,}")
+_BREAK_NEWLINES_RE = re.compile(r"\n{6,}")
+_BREAK_REPEAT_RE = re.compile(r"([^\s\-\.=\*|_~#])\1{50,}")
+_PAGE_FOOTER_RE = re.compile(r"^第\s*\d+\s*页\s*共\s*\d+\s*页\s*$", re.MULTILINE)
+_OCR_CJK_SPACE_RE = re.compile(r"([一-鿿])(?:\s+([一-鿿]))+")
+_URL_SPACE_RE = re.compile(r"(https?://\S*)\s+(\S+)")
+
+# ── MinerU 专用 ──────────────────────────────────────────────────────────────
+
+_COVER_META_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(r"^分类号[：:]\s*\S+"),
     re.compile(r"^中图分类号[：:]\s*\S+"),
     re.compile(r"^单位代码[：:]\s*\S+"),
@@ -294,25 +126,10 @@ _COVER_META_PATTERNS = [
     re.compile(r"^A\s+B\s+S\s+T\s+R\s+A\s+C\s+T"),
     re.compile(r"^Corresponding author", re.IGNORECASE),
     re.compile(r"^E-mail\s*[:：]", re.IGNORECASE),
-    # 作者邮箱行（如 "Jun He hejun@njau.edu.cn"）
     re.compile(r"^[A-Z][a-z]+ [A-Z][a-z]+\s+[\w.]+@[\w.]+\.\w+$"),
-]
-
-# 期刊头模式（中点包裹的期刊名，仅匹配文档前部）
-_JOURNAL_HEADER_RE = re.compile(r"^·.{2,40}·\s*$")
-
-# OCR 中文空格：连续 2+ 个 CJK 字符被空格隔开
-_OCR_CJK_SPACE_RE = re.compile(
-    r"([一-鿿])(?:\s+([一-鿿]))+"
 )
 
-# 无点状目录：篇章节标题模式
-_TOC_CHAPTER_RE = re.compile(
-    r"^第[一二三四五六七八九十百千\d]+[篇章节部]"
-)
-
-# 封面机构行模式
-_INSTITUTION_PATTERNS = [
+_INSTITUTION_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(r"^培养单位"),
     re.compile(r"^专业名称[：:.]"),
     re.compile(r"^指导教师"),
@@ -335,35 +152,21 @@ _INSTITUTION_PATTERNS = [
     re.compile(r"^学士学位论文$"),
     re.compile(r"^Thesis for Master", re.IGNORECASE),
     re.compile(r"^Dissertation for Doctor", re.IGNORECASE),
-    re.compile(r"^\d{4}年\d{1,2}月\d{1,2}日$"),  # 封面日期
-    re.compile(r"^\d{4}年\d{1,2}月$"),  # 封面日期
+    re.compile(r"^\d{4}年\d{1,2}月\d{1,2}日$"),
+    re.compile(r"^\d{4}年\d{1,2}月$"),
     re.compile(r"大学学位评定委员会$"),
     re.compile(r"University.*Degree", re.IGNORECASE),
     re.compile(r"^东北师范大学.*研究生"),
-]
+)
 
-# 目录区域检测
-_TOC_START_PATTERNS = [
-    re.compile(r"^目\s*录\s*$"),
-    re.compile(r"^Table of Contents", re.IGNORECASE),
-    re.compile(r"^CONTENTS", re.IGNORECASE),
-]
+_TOC_CHAPTER_RE = re.compile(r"^第[一二三四五六七八九十百千\d]+[篇章节部]")
+_JOURNAL_HEADER_RE = re.compile(r"^·.{2,40}·\s*$")
+_CNKI_RE = re.compile(r"^.*中国知网.*cnki.*$", re.MULTILINE)
+_AUTHOR_BIO_RE = re.compile(r"作者简介[：:].*$", re.MULTILINE)
+_HTML_TABLE_TAGS_RE = re.compile(r"</?(?:table|tr|td|th|thead|tbody)\b[^>]*>", re.IGNORECASE)
+_EN_HEADING_SPACE_RE = re.compile(r"^(#{1,6}\s+)([A-Za-z](?:\s+[A-Za-z]){2,})\s*$", re.MULTILINE)
 
-# 目录条目模式（带点号或页码）
-_TOC_ENTRY_PATTERN = re.compile(r"^\s*[一-鿿\w].*[\.\．\…]{2,}\s*\d+\s*$")
-_TOC_ENTRY_PATTERN2 = re.compile(r"^\s*[一-鿿\w].*\.\.\s*[\.\s]*\d+\s*$")
-
-# CNKI 水印（仅匹配单行）
-_CNKI_PATTERN = re.compile(r"^.*中国知网.*cnki.*$", re.MULTILINE)
-
-# 作者简介
-_AUTHOR_BIO_PATTERN = re.compile(r"作者简介[：:].*$", re.MULTILINE)
-
-# URL 空格修复
-_URL_SPACE_PATTERN = re.compile(r"(https?://\S*)\s+(\S+)")
-
-# 英文页眉页脚
-_EN_HEADER_FOOTER_PATTERNS = [
+_EN_HEADER_FOOTER_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(r"^Check for updates$", re.IGNORECASE),
     re.compile(r"^Publisher'?s?\s+note", re.IGNORECASE),
     re.compile(r"^Contents lists? available", re.IGNORECASE),
@@ -375,16 +178,9 @@ _EN_HEADER_FOOTER_PATTERNS = [
     re.compile(r"^REVIEWED\s+BY$", re.IGNORECASE),
     re.compile(r"^OPEN\s+ACCESS$", re.IGNORECASE),
     re.compile(r"^Index\s+\d+\s*$", re.IGNORECASE),
-]
+)
 
-# HTML 表格标签
-_HTML_TABLE_TAGS = re.compile(r"</?(?:table|tr|td|th|thead|tbody)\b[^>]*>", re.IGNORECASE)
-
-# 英文标题逐字母空格（如 ## A B S T R A C T）
-_EN_HEADING_SPACE_RE = re.compile(r"^(#{1,6}\s+)([A-Za-z](?:\s+[A-Za-z]){2,})\s*$", re.MULTILINE)
-
-# 期刊平台 UI 元素（按钮、链接文本混入正文）
-_JOURNAL_UI_PATTERNS = [
+_JOURNAL_UI_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(r"^Submit your article to this journal", re.IGNORECASE),
     re.compile(r"^View (?:related )?articles", re.IGNORECASE),
     re.compile(r"^View Crossmark data", re.IGNORECASE),
@@ -392,349 +188,216 @@ _JOURNAL_UI_PATTERNS = [
     re.compile(r"^Citing articles?:\s*\d+", re.IGNORECASE),
     re.compile(r"^This page intentionally left blank", re.IGNORECASE),
     re.compile(r"^This article was submitted to\b", re.IGNORECASE),
-]
+)
 
-# 版权声明 / 免责声明
-_WATERMARK_PATTERNS = [
+_WATERMARK_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(r"^Copyright[:\s].*(?:Licensee|Publisher|Published by)", re.IGNORECASE),
     re.compile(r"^©?\s*The Author\(s\)\s+\d{4}", re.IGNORECASE),
     re.compile(r"^Disclaimer/Publisher", re.IGNORECASE),
     re.compile(r"^\(c\)\s*\d{4}\s+.*(?:Published by|Licensee)", re.IGNORECASE),
-]
+)
 
-# 裸图片引用（无 alt 文本、哈希命名文件）
 _BARE_IMAGE_RE = re.compile(
     r"^!\[\]\(images?/[a-f0-9\-]+\.(?:jpg|jpeg|png|gif|bmp|webp)\)\s*$", re.IGNORECASE,
 )
 
-# 表格占位符
 _TABLE_PLACEHOLDER_RE = re.compile(r"^\[Insert\s+Table\s+\d+.*?\]$", re.IGNORECASE)
 
 
-def _remove_cover_metadata(text: str) -> tuple[str, int]:
-    """移除封面元数据行（分类号、单位代码、密级、学号等）
+# ═══════════════════════════════════════════════════════════════════════════════
+# 规则表（纯数据 — 新增规则只需加一行）
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    这些通常出现在论文前几行，是封面排版信息，不是正文内容。
-    """
-    lines = text.split("\n")
-    result = []
-    removed = 0
+# ── MinerU 行级规则 ──────────────────────────────────────────────────────────
 
-    for line in lines:
-        stripped = line.strip()
-        if any(p.match(stripped) for p in _COVER_META_PATTERNS):
-            removed += 1
-            continue
-        result.append(line)
+_TOC_ENTRY_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"^目\s*录\s*$"),
+    re.compile(r"^Table of Contents", re.IGNORECASE),
+    re.compile(r"^CONTENTS\s*$", re.IGNORECASE),
+    re.compile(r"^\s*[一-鿿\w].*[\.\．\…]{2,}\s*\d+\s*$"),
+    re.compile(r"^\s*[一-鿿\w].*\.\.\s*[\.\s]*\d+\s*$"),
+    re.compile(r"^[一-鿿\w].*\.\.\s*[\.\s]*\d+\s*$"),
+    re.compile(r"^[一-鿿\w].*\.\.\s*$"),
+)
 
-    return "\n".join(result), removed
+_MINERU_LINE_RULES: list[LineRule] = [
+    LineRule("封面元数据", _COVER_META_PATTERNS),
+    LineRule("机构行", _INSTITUTION_PATTERNS),
+    LineRule("英文页眉页脚", _EN_HEADER_FOOTER_PATTERNS),
+    LineRule("期刊UI", _JOURNAL_UI_PATTERNS),
+    LineRule("版权声明", _WATERMARK_PATTERNS),
+    LineRule("裸图片", (_BARE_IMAGE_RE,)),
+    LineRule("表格占位符", (_TABLE_PLACEHOLDER_RE,)),
+    LineRule("期刊头", (_JOURNAL_HEADER_RE,), limit=20, full=True),
+    LineRule("目录条目", _TOC_ENTRY_PATTERNS),
+]
 
-
-def _remove_toc_section(text: str) -> tuple[str, int]:
-    """移除目录条目行（带点号 + 页码的行）
-
-    策略：逐行检测，只删除匹配目录条目模式的行，不做整段删除。
-    这样更安全，不会误删正文标题。
-
-    目录条目特征：
-    - 包含连续点号 + 页码（如 "第1章绪论.. .. 1"）
-    - "摘要...."、"ABSTRACT.. III"
-    """
-    lines = text.split("\n")
-    result = []
-    removed = 0
-
-    for line in lines:
-        stripped = line.strip()
-
-        # 检测目录开始标题，也删除
-        if any(p.match(stripped) for p in _TOC_START_PATTERNS):
-            removed += 1
-            continue
-
-        # 检测目录条目（带点号 + 页码）
-        if stripped and (
-            _TOC_ENTRY_PATTERN.match(stripped) or
-            _TOC_ENTRY_PATTERN2.match(stripped) or
-            re.match(r"^[一-鿿\w].*\.\.\s*[\.\s]*\d+\s*$", stripped) or
-            re.match(r"^[一-鿿\w].*\.\.\s*$", stripped)
-        ):
-            removed += 1
-            continue
-
-        # "CONTENTS" 英文目录标题
-        if re.match(r"^CONTENTS\s*$", stripped, re.IGNORECASE):
-            removed += 1
-            continue
-
-        result.append(line)
-
-    return "\n".join(result), removed
+# ── MinerU 正则规则 ──────────────────────────────────────────────────────────
 
 
-def _remove_cnki_watermark(text: str) -> tuple[str, int]:
-    """移除 CNKI 水印行"""
-    original_len = len(text)
-    text = _CNKI_PATTERN.sub("", text)
-    # 清理移除后的多余空行
+def _fix_heading_space_match(m: re.Match) -> str:
+    """英文标题逐字母空格修复的替换函数"""
+    return m.group(1) + m.group(2).replace(" ", "")
+
+
+_MINERU_REGEX_RULES: list[RegexRule] = [
+    RegexRule("中文页眉页脚", _PAGE_FOOTER_RE),
+    RegexRule("CNKI水印", _CNKI_RE),
+    RegexRule("作者简介", _AUTHOR_BIO_RE),
+    RegexRule("HTML表格标签", _HTML_TABLE_TAGS_RE),
+    RegexRule("英文标题空格", _EN_HEADING_SPACE_RE, repl=_fix_heading_space_match),
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 通用格式化函数
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _compress_empty_lines(text: str) -> tuple[str, int]:
+    """压缩连续 2+ 空行为 1 个空行"""
+    original = len(text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    removed = 1 if len(text) < original_len else 0
-    return text, removed
+    return text, max(0, (original - len(text)) // 2)
 
 
-def _remove_author_bio(text: str) -> tuple[str, int]:
-    """移除作者简介块
-
-    匹配"作者简介："开头的整行（可能跨多行，直到遇到空行或新段落）。
-    """
-    original_len = len(text)
-    text = _AUTHOR_BIO_PATTERN.sub("", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    removed = 1 if len(text) < original_len else 0
-    return text, removed
-
-
-def _remove_institution_lines(text: str) -> tuple[str, int]:
-    """移除封面机构行（培养单位、专业名称、指导教师等）"""
+def _normalize_headings(text: str) -> tuple[str, int]:
+    """标准化标题层级（修正跳级）"""
     lines = text.split("\n")
     result = []
-    removed = 0
-
+    normalized = 0
+    last_level = 0
     for line in lines:
-        stripped = line.strip()
-        if any(p.match(stripped) for p in _INSTITUTION_PATTERNS):
-            removed += 1
-            continue
-        result.append(line)
-
-    return "\n".join(result), removed
+        match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if match:
+            level = len(match.group(1))
+            title = match.group(2).strip()
+            if level > last_level + 1 and last_level > 0:
+                level = last_level + 1
+                normalized += 1
+            last_level = level
+            result.append(f"{'#' * level} {title}")
+        else:
+            result.append(line)
+    return "\n".join(result), normalized
 
 
 def _fix_url_spaces(text: str) -> tuple[str, int]:
-    """修复 MinerU 输出中 URL 内的空格
-
-    如 "https://www. cnki. net" → "https://www.cnki.net"
-    """
-    matches = _URL_SPACE_PATTERN.findall(text)
+    """修复 URL 中的空格（如 "https://www. cnki. net"）"""
     count = 0
-    for url_part, rest in matches:
-        original = f"{url_part} {rest}"
-        # 移除 URL 中间和末尾的空格
-        fixed = url_part.replace(" ", "") + rest.replace(" ", "")
-        if fixed != original:
-            text = text.replace(original, fixed, 1)
-            count += 1
+
+    def _fix(m: re.Match) -> str:
+        nonlocal count
+        count += 1
+        return m.group(0).replace(" ", "")
+
+    # 循环直到无更多匹配（一次 sub 只处理一个空格）
+    while True:
+        new_text = _URL_SPACE_RE.sub(_fix, text)
+        if new_text == text:
+            break
+        text = new_text
     return text, count
 
 
-def _strip_html_table_tags(text: str) -> tuple[str, int]:
-    """移除 MinerU 输出中的 HTML 表格标签，保留文本内容"""
-    count = len(_HTML_TABLE_TAGS.findall(text))
-    cleaned = _HTML_TABLE_TAGS.sub("", text)
-    return cleaned, count
-
-
-def _remove_en_header_footer(text: str) -> tuple[str, int]:
-    """移除英文页眉页脚（Check for updates, Publisher's note 等）"""
-    lines = text.split("\n")
+def _normalize_width(text: str) -> str:
+    """统一全角半角（数字和英文字母 → 半角）"""
     result = []
-    removed = 0
-    for line in lines:
-        stripped = line.strip()
-        if any(p.match(stripped) for p in _EN_HEADER_FOOTER_PATTERNS):
-            removed += 1
-            continue
-        result.append(line)
-    return "\n".join(result), removed
+    for char in text:
+        code = ord(char)
+        if 0xFF10 <= code <= 0xFF19:
+            result.append(chr(code - 0xFF10 + 0x30))
+        elif 0xFF21 <= code <= 0xFF3A:
+            result.append(chr(code - 0xFF21 + 0x41))
+        elif 0xFF41 <= code <= 0xFF5A:
+            result.append(chr(code - 0xFF41 + 0x61))
+        else:
+            result.append(char)
+    return "".join(result)
 
 
-def _fix_heading_spaces_english(text: str) -> tuple[str, int]:
-    """修复英文标题中的逐字母空格（如 ## A B S T R A C T → ## ABSTRACT）"""
-    def _fix(m: re.Match) -> str:
-        prefix, spaced = m.group(1), m.group(2)
-        return prefix + spaced.replace(" ", "")
-    cleaned, count = _EN_HEADING_SPACE_RE.subn(_fix, text)
-    return cleaned, count
+def _remove_trailing_spaces(text: str) -> str:
+    """去除行尾空格"""
+    return "\n".join(line.rstrip() for line in text.split("\n"))
 
 
-def _remove_journal_ui(text: str) -> tuple[str, int]:
-    """移除期刊平台 UI 元素（Submit/View/Crossmark 等按钮文本）"""
-    lines = text.split("\n")
-    result = []
-    removed = 0
-    for line in lines:
-        stripped = line.strip()
-        if any(p.match(stripped) for p in _JOURNAL_UI_PATTERNS):
-            removed += 1
-            continue
-        result.append(line)
-    return "\n".join(result), removed
+def _normalize_newlines(text: str) -> str:
+    """标准化换行（6+ 换行压缩为 2 个）"""
+    text = _BREAK_NEWLINES_RE.sub("\n\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text)
 
 
-def _remove_watermarks(text: str) -> tuple[str, int]:
-    """移除版权声明 / 免责声明"""
-    lines = text.split("\n")
-    result = []
-    removed = 0
-    for line in lines:
-        stripped = line.strip()
-        if any(p.match(stripped) for p in _WATERMARK_PATTERNS):
-            removed += 1
-            continue
-        result.append(line)
-    return "\n".join(result), removed
+# ═══════════════════════════════════════════════════════════════════════════════
+# 复杂函数（无法数据化的逻辑）
+# ═══════════════════════════════════════════════════════════════════════════════
 
-
-def _remove_bare_images(text: str) -> tuple[str, int]:
-    """移除无 alt 文本的哈希命名图片引用"""
-    lines = text.split("\n")
-    result = []
-    removed = 0
-    for line in lines:
-        if _BARE_IMAGE_RE.match(line.strip()):
-            removed += 1
-            continue
-        result.append(line)
-    return "\n".join(result), removed
-
-
-def _remove_table_placeholders(text: str) -> tuple[str, int]:
-    """移除表格占位符（如 [Insert Table 1 about here]）"""
-    lines = text.split("\n")
-    result = []
-    removed = 0
-    for line in lines:
-        if _TABLE_PLACEHOLDER_RE.match(line.strip()):
-            removed += 1
-            continue
-        result.append(line)
-    return "\n".join(result), removed
-
-
-def _remove_journal_header(text: str) -> tuple[str, int]:
-    """移除文档前部的期刊头（中点包裹的文本）
-
-    如 "·社会学理论与实践研究·"
-    只检查前 20 行，避免误伤正文中的中点符号。
-    """
-    lines = text.split("\n")
-    result = []
-    removed = 0
-
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if i < 20 and _JOURNAL_HEADER_RE.match(stripped):
-            removed += 1
-            continue
-        result.append(line)
-
-    return "\n".join(result), removed
-
-
-def _remove_ocr_spaces_in_chinese(text: str) -> tuple[str, int]:
-    """移除 OCR 产生的中文字符间空格
-
-    如 "摘 要：本文研究了" → "摘要：本文研究了"
-    只处理连续 3+ 个 CJK 字符被空格隔开的情况，避免误伤。
-    """
-    def _fix_match(m: re.Match) -> str:
-        # 去掉匹配段中所有空格，拼回连续 CJK
-        return re.sub(r"\s+", "", m.group(0))
-
-    new_text = _OCR_CJK_SPACE_RE.sub(_fix_match, text)
-    # 统计匹配次数
+def _remove_ocr_spaces_chinese(text: str) -> tuple[str, int]:
+    """移除 OCR 产生的中文字符间空格（连续 2+ CJK 被空格隔开）"""
     matches = _OCR_CJK_SPACE_RE.findall(text)
-    return new_text, len(matches)
+    text = _OCR_CJK_SPACE_RE.sub(lambda m: re.sub(r"\s+", "", m.group(0)), text)
+    return text, len(matches)
 
 
-def _remove_non_dot_leader_toc(
-    text: str, metadata: dict | None = None,
-) -> tuple[str, int]:
-    """移除无点状符号的目录块
-
-    处理政府文档等纯文本目录（如 "第一篇 规划背景"）。
-
-    策略 1（有 metadata）：从 content_list 找 page_idx≤1 的大文本块，
-        若含 30+ 行 TOC 模式则整块文本从 markdown 中移除。
-    策略 2（无 metadata）：启发式检测连续 TOC 行。
-    """
-    # 策略 1：利用 content_list metadata
-    if metadata and "content_list" in metadata:
-        return _remove_toc_from_content_list(text, metadata["content_list"])
-
-    # 策略 2：启发式检测
-    return _remove_toc_heuristic(text)
+def _fix_heading_ocr_spaces(text: str) -> tuple[str, int]:
+    """修复标题内的 OCR 空格（仅 heading 行）"""
+    lines = text.split("\n")
+    result = []
+    fixed = 0
+    for line in lines:
+        match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if match:
+            prefix, title = match.group(1), match.group(2)
+            new_title = _OCR_CJK_SPACE_RE.sub(
+                lambda m: re.sub(r"\s+", "", m.group(0)), title,
+            )
+            if new_title != title:
+                fixed += 1
+            result.append(f"{prefix} {new_title}")
+        else:
+            result.append(line)
+    return "\n".join(result), fixed
 
 
 def _remove_toc_from_content_list(
     text: str, content_list: list[dict],
 ) -> tuple[str, int]:
-    """利用 content_list 元数据移除目录块
-
-    找 page_idx≤1 的 text 块，若含大量 TOC 行则从 markdown 中删除对应文本。
-    处理所有匹配块（目录可能跨多页）。
-    """
+    """利用 content_list 元数据移除目录块（page_idx≤1 且含 30+ TOC 行）"""
     total_removed = 0
-
     for item in content_list:
-        if item.get("type") != "text":
+        if item.get("type") != "text" or item.get("page_idx", 999) > 1:
             continue
-        if item.get("page_idx", 999) > 1:
-            continue
-
         block_text = item.get("text", "")
         if not block_text:
             continue
-
         lines = block_text.split("\n")
-        toc_count = sum(
-            1 for line in lines
-            if _TOC_CHAPTER_RE.match(line.strip())
-        )
-
-        # 30+ 行 TOC 模式 → 整块是目录
+        toc_count = sum(1 for line in lines if _TOC_CHAPTER_RE.match(line.strip()))
         if toc_count >= 30:
             for line in lines:
                 stripped = line.strip()
                 if stripped and stripped in text:
                     text = text.replace(stripped, "", 1)
                     total_removed += 1
-
     if total_removed > 0:
         text = re.sub(r"\n{3,}", "\n\n", text)
-
     return text, total_removed
 
 
 def _remove_toc_heuristic(text: str) -> tuple[str, int]:
-    """启发式检测并移除无点状目录块
-
-    规则：找到 目录/日求 标记后，收集连续匹配 TOC 模式的行。
-    若 10+ 行连续匹配，整块删除。
-    """
+    """启发式检测无点状目录块（连续 10+ TOC 行 → 删除）"""
     lines = text.split("\n")
     result = []
     removed = 0
     i = 0
-
     while i < len(lines):
         stripped = lines[i].strip()
-
-        # 检测目录开始标记
-        is_toc_marker = bool(re.match(r"^[日目]\s*[求录]\s*$", stripped))
-        if not is_toc_marker:
+        if not re.match(r"^[日目]\s*[求录]\s*$", stripped):
             result.append(lines[i])
             i += 1
             continue
-
-        # 找到目录标记，向后收集 TOC 行
-        toc_start = i
         toc_lines = [lines[i]]
         j = i + 1
         while j < len(lines):
             s = lines[j].strip()
             if not s:
-                # 空行：看后面是否还有 TOC 行
                 k = j + 1
                 while k < len(lines) and not lines[k].strip():
                     k += 1
@@ -748,433 +411,278 @@ def _remove_toc_heuristic(text: str) -> tuple[str, int]:
                 j += 1
             else:
                 break
-
-        # 10+ 行 → 删除整块
         if len(toc_lines) >= 10:
             removed += len(toc_lines)
             i = j
         else:
             result.extend(toc_lines)
             i = j
-
     return "\n".join(result), removed
 
 
-def _fix_heading_spaces(text: str) -> tuple[str, int]:
-    """修复标题内的 OCR 空格
-
-    如 "## 一 社会治理 维度在城乡融合中的缺席"
-    → "## 一社会治理维度在城乡融合中的缺席"
-    """
-    lines = text.split("\n")
-    result = []
-    fixed = 0
-
-    for line in lines:
-        match = re.match(r"^(#{1,6})\s+(.+)$", line)
-        if match:
-            prefix = match.group(1)
-            title = match.group(2)
-            # 对标题文本应用 OCR 空格去除（连续 3+ CJK 字符）
-            new_title = _OCR_CJK_SPACE_RE.sub(
-                lambda m: re.sub(r"\s+", "", m.group(0)), title,
-            )
-            if new_title != title:
-                fixed += 1
-            result.append(f"{prefix} {new_title}")
-        else:
-            result.append(line)
-
-    return "\n".join(result), fixed
-
-
-def _remove_pua_chars(text: str) -> tuple[str, int]:
-    """去除 Unicode 私有区字符（PUA）
-
-    PDF 解析器（如 MarkItDown）在处理某些字体时会输出 PUA 字符，
-    这些字符是字体编码遗留，不是有效内容。
-    """
-    original_len = len(text)
-    # 移除 PUA 区域字符：U+E000-U+F8FF
-    text = re.sub(r"[-]", "", text)
-    removed = original_len - len(text)
-    return text, removed
+def _remove_toc(text: str, metadata: dict | None = None) -> tuple[str, int]:
+    """移除目录（metadata 可用时用策略 1，否则用启发式）"""
+    if metadata and "content_list" in metadata:
+        return _remove_toc_from_content_list(text, metadata["content_list"])
+    return _remove_toc_heuristic(text)
 
 
 def _remove_table_residue(text: str) -> tuple[str, int]:
-    """去除表格残留
+    """去除表格残留（MarkItDown 在排版密集页面产生的伪表格）
 
-    MarkItDown 在处理排版密集的 PDF 页面（封面、目录等）时，
-    会将内容错误地转换为 markdown 表格。这些表格通常：
-    - 分隔行密集（| --- | --- |）
-    - 每个单元格只有 1-2 个字符
-    - 不是真正的表格数据，而是表单布局
-
-    策略：检测连续的表格行块，如果平均单元格字符数 < 4，认为是伪表格。
+    策略：检测连续表格行块，平均单元格字符数 < 50 → 伪表格。
     """
     lines = text.split("\n")
     result = []
     removed = 0
     i = 0
-
     while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-
-        # 检测表格行（以 | 开头，结尾可能有 | 也可能没有）
+        stripped = lines[i].strip()
         if stripped.startswith("|"):
-            # 收集连续的表格行
             table_start = i
             table_end = i
             while table_end < len(lines):
                 s = lines[table_end].strip()
                 if s.startswith("|") or (not s and table_end > table_start):
-                    # 表格行或表格内的空行
                     table_end += 1
                 else:
                     break
-
             table_lines = [l for l in lines[table_start:table_end] if l.strip()]
-
-            # 分离分隔行和数据行
             sep_pattern = re.compile(r"^\|[\s\-:]+(\|[\s\-:]+)+")
             data_lines = [l for l in table_lines if not sep_pattern.match(l.strip())]
-
-            # 计算平均每行有效字符数
-            total_chars = 0
-            for dl in data_lines:
-                cells = dl.strip().strip("|").rstrip().split("|")
-                for cell in cells:
-                    cell_text = cell.strip()
-                    total_chars += len(cell_text)
-
-            avg_chars_per_line = total_chars / max(len(data_lines), 1)
-
-            # 如果平均每行有效字符 < 50，认为是伪表格
-            # PDF 布局转换产生的表格，单元格内容碎片化严重
-            # 真正的数据表格每行通常有 50+ 有效字符
-            if avg_chars_per_line < 50 and len(data_lines) >= 2:
+            total_chars = sum(
+                len(cell.strip())
+                for dl in data_lines
+                for cell in dl.strip().strip("|").rstrip().split("|")
+            )
+            avg = total_chars / max(len(data_lines), 1)
+            if avg < 50 and len(data_lines) >= 2:
                 extracted = _extract_text_from_table(data_lines)
                 result.extend(extracted)
                 removed += len(table_lines) - len(extracted)
                 i = table_end
                 continue
-
-        result.append(line)
+        result.append(lines[i])
         i += 1
-
     return "\n".join(result), removed
 
 
 def _extract_text_from_table(table_data_lines: list[str]) -> list[str]:
-    """从伪表格中提取纯文本
-
-    把表格单元格中的碎片文本拼接回正常文本。
-    """
-    all_fragments = []
-    for line in table_data_lines:
-        cells = line.strip().strip("|").split("|")
-        for cell in cells:
-            text = cell.strip()
-            if text:
-                all_fragments.append(text)
-
-    if not all_fragments:
+    """从伪表格中提取纯文本"""
+    fragments = [
+        cell.strip()
+        for line in table_data_lines
+        for cell in line.strip().strip("|").split("|")
+        if cell.strip()
+    ]
+    if not fragments:
         return []
-
-    # 拼接所有碎片为一行（中文不需要空格）
-    merged = "".join(all_fragments)
-
-    # 按合理长度断行
-    result = []
-    for i in range(0, len(merged), 80):
-        result.append(merged[i:i + 80])
-
-    return result
-
-
-def _remove_page_footers(text: str) -> tuple[str, int]:
-    """去除页眉页脚噪音
-
-    如 "第 1 页  共 38 页"
-    """
-    original_len = len(text)
-    text = re.sub(r"^第\s*\d+\s*页\s*共\s*\d+\s*页\s*$", "", text, flags=re.MULTILINE)
-    removed_lines = original_len - len(text)
-    # 也清理连续的空行（footer 删除后留下的）
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text, max(removed_lines, 0)
-
-
-def _compress_excessive_empty_lines(text: str) -> tuple[str, int]:
-    """压缩过多空行
-
-    PDF 解析器经常在每行内容之间插入空行，导致：
-    - 11页论文有 3542 个空行（46%）
-
-    策略：连续 2+ 空行压缩为 1 个空行。
-    """
-    original_len = len(text)
-    # 连续 2+ 换行压缩为 1 个换行（即保留单个空行作为段落分隔）
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    # 也压缩连续 2 个换行（即连续 2 个空行）为 1 个
-    # 但这可能太激进，先不压缩 2 个空行
-    compressed = max(0, (original_len - len(text)) // 2)
-    return text, compressed
+    merged = "".join(fragments)
+    return [merged[i:i + 80] for i in range(0, len(merged), 80)]
 
 
 def _merge_broken_lines(text: str) -> tuple[str, int]:
-    """合并碎片行
-
-    PDF 解析器（如 MarkItDown）在处理某些 PDF 时，会把文本拆成
-    碎片行（2-6 字符一行），或在每个句子后插入空行。
-
-    策略：
-    - 短行（≤10 字符）连续时合并为一行（碎片拼接）
-    - 长行（>10 字符）用空行作段落分隔
-    - markdown 语法行不参与合并
-    """
-    _SHORT_THRESHOLD = 10  # 短行阈值
-
+    """合并碎片行（≤10 字符的连续短行拼接）"""
+    _SHORT = 10
     lines = text.split("\n")
     result = []
     merge_count = 0
-    buffer = []
-
+    buffer: list[str] = []
     for line in lines:
         stripped = line.strip()
-
-        # markdown 语法行不参与合并
-        if stripped and (stripped.startswith("#") or stripped.startswith("|") or stripped.startswith("```")):
+        if stripped and (stripped[0] in "#|`" or stripped.startswith("```")):
             if buffer:
-                merged = "".join(buffer)
-                result.append(merged)
+                result.append("".join(buffer))
                 merge_count += 1
                 buffer = []
             result.append(line)
             continue
-
         if stripped:
-            is_short = len(stripped) <= _SHORT_THRESHOLD
-            if is_short:
-                # 短行：累积到 buffer
+            if len(stripped) <= _SHORT:
                 buffer.append(stripped)
             else:
-                # 长行
                 if buffer:
-                    # 有累积的短行，先 flush，再开始新行
-                    merged = "".join(buffer)
-                    result.append(merged)
+                    result.append("".join(buffer))
                     merge_count += 1
                     buffer = []
                 result.append(stripped)
         else:
-            # 空行：flush buffer
             if buffer:
-                merged = "".join(buffer)
-                result.append(merged)
+                result.append("".join(buffer))
                 merge_count += 1
                 buffer = []
             result.append("")
-
-    # 处理最后的 buffer
     if buffer:
-        merged = "".join(buffer)
-        result.append(merged)
+        result.append("".join(buffer))
         merge_count += 1
-
     return "\n".join(result), merge_count
 
 
 def _merge_ultra_short_lines(text: str) -> tuple[str, int]:
-    """合并极短碎片行（跨空行）
-
-    处理 PDF 解析器产生的逐字拆行问题，如：
-        学
-        <空行>
-        习
-        <空行>
-        与
-        <空行>
-        探
-        <空行>
-        索
-
-    策略：跨空行合并 ≤2 字符的极短行。
-    只有遇到长行（>2 字符且非 markdown 语法）或连续 2+ 空行时才 flush。
-    """
-    _ULTRA_SHORT = 2  # 极短行阈值
-
+    """合并极短碎片行（跨空行，≤2 字符）"""
+    _ULTRA = 2
     lines = text.split("\n")
     result = []
     merge_count = 0
-    buffer = []
+    buffer: list[str] = []
     empty_count = 0
-
     for line in lines:
         stripped = line.strip()
-
-        # markdown 语法行：hard break
-        if stripped and (stripped.startswith("#") or stripped.startswith("|") or stripped.startswith("```")):
+        if stripped and (stripped[0] in "#|`" or stripped.startswith("```")):
             if buffer:
-                merged = "".join(buffer)
-                result.append(merged)
+                result.append("".join(buffer))
                 merge_count += 1
                 buffer = []
                 empty_count = 0
             result.append(line)
             continue
-
         if stripped:
-            is_ultra_short = len(stripped) <= _ULTRA_SHORT
-
-            if is_ultra_short:
-                # 极短行：累积（忽略前面的空行）
+            if len(stripped) <= _ULTRA:
                 buffer.append(stripped)
                 empty_count = 0
             else:
-                # 非极短行
                 if buffer and empty_count == 0:
-                    # 前面没有空行，直接累积
                     buffer.append(stripped)
                 elif buffer and empty_count > 0:
-                    # 前面有空行
-                    # 如果当前行也是短行（≤10字符），继续累积
                     if len(stripped) <= 10:
                         buffer.append(stripped)
                     else:
-                        # 长行：flush buffer，当前行独立
-                        merged = "".join(buffer)
-                        result.append(merged)
+                        result.append("".join(buffer))
                         merge_count += 1
                         buffer = []
                         result.append(stripped)
                 else:
-                    # buffer 为空
                     result.append(stripped)
                 empty_count = 0
         else:
-            # 空行
             empty_count += 1
             if empty_count >= 2:
-                # 连续 2+ 空行：flush buffer
                 if buffer:
-                    merged = "".join(buffer)
-                    result.append(merged)
+                    result.append("".join(buffer))
                     merge_count += 1
                     buffer = []
                 result.append("")
-
-    # 处理最后的 buffer
     if buffer:
-        merged = "".join(buffer)
-        result.append(merged)
+        result.append("".join(buffer))
         merge_count += 1
-
     return "\n".join(result), merge_count
 
 
-def _remove_control_chars(text: str) -> tuple[str, int]:
-    """去除控制字符"""
-    original = text
-    # 保留 \n \r \t
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-    removed = len(original) - len(text)
-    return text, removed
+# ═══════════════════════════════════════════════════════════════════════════════
+# 流水线编排器
+# ═══════════════════════════════════════════════════════════════════════════════
 
-
-def _fix_garbled_text(text: str) -> tuple[str, int]:
-    """修复乱码碎片"""
-    matches = _GARBLED_PATTERN.findall(text)
-    for match in matches:
-        text = text.replace(match, " ")
-    return text, len(matches)
-
-
-def _normalize_newlines(text: str) -> str:
-    """标准化换行"""
-    # 连续 6+ 换行合并为 2 个
-    text = _BREAK_NEWLINES.sub("\n\n", text)
-    # 连续 3-5 换行合并为 2 个
-    text = re.sub(r"\n{3,5}", "\n\n", text)
-    return text
-
-
-def _remove_trailing_spaces(text: str) -> str:
-    """去除行尾空格"""
-    lines = text.split("\n")
-    lines = [line.rstrip() for line in lines]
-    return "\n".join(lines)
-
-
-def _normalize_width(text: str) -> str:
-    """统一全角半角
-
-    数字和英文字母统一为半角
-    """
-    result = []
-    for char in text:
-        code = ord(char)
-        # 全角数字 ０-９ → 半角 0-9
-        if 0xFF10 <= code <= 0xFF19:
-            result.append(chr(code - 0xFF10 + 0x30))
-        # 全角大写Ａ-Ｚ → 半角 A-Z
-        elif 0xFF21 <= code <= 0xFF3A:
-            result.append(chr(code - 0xFF21 + 0x41))
-        # 全角小写ａ-ｚ → 半角 a-z
-        elif 0xFF41 <= code <= 0xFF5A:
-            result.append(chr(code - 0xFF41 + 0x61))
-        else:
-            result.append(char)
-    return "".join(result)
-
-
-def _normalize_headings(text: str) -> tuple[str, int]:
-    """标准化标题层级
-
-    确保标题层级连续，无跳级。
-    """
-    lines = text.split("\n")
-    normalized = 0
-    result = []
-    last_level = 0
-
-    for line in lines:
-        match = re.match(r"^(#{1,6})\s+(.+)$", line)
-        if match:
-            level = len(match.group(1))
-            title = match.group(2).strip()
-
-            # 跳级修正：如果跳级，调整为上一级 + 1
-            if level > last_level + 1 and last_level > 0:
-                level = last_level + 1
-                normalized += 1
-
-            last_level = level
-            result.append(f"{'#' * level} {title}")
-        else:
-            result.append(line)
-
-    return "\n".join(result), normalized
-
-
-def _fix_repeated_chars(text: str) -> tuple[str, int]:
-    """修复重复字符"""
-    matches = _BREAK_REPEAT.findall(text)
-    for match in matches:
-        # 找到重复字符序列并截断
-        pattern = re.compile(re.escape(match) + "{50,}")
-        text = pattern.sub(match * 3, text)
-    return text, len(matches)
-
-
-def _log(level: str, message: str, **kwargs) -> dict:
-    """生成日志条目"""
+def _log(level: str, message: str) -> dict:
     import datetime
-    entry = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "level": level,
-        "message": message,
-    }
-    entry.update(kwargs)
-    return entry
+    return {"timestamp": datetime.datetime.now().isoformat(), "level": level, "message": message}
+
+
+def _record(logs: list[dict], message: str, count: int) -> None:
+    if count > 0:
+        logs.append(_log("info", f"{message} {count} 处"))
+
+
+def clean_mineru_output(markdown: str, metadata: dict | None = None) -> CleaningResult:
+    """MinerU 输出的专用清洗（数据驱动，行级规则单次遍历）"""
+    logs: list[dict] = []
+    t0 = time.perf_counter()
+    original_length = len(markdown)
+
+    # Phase 1: 行级过滤（单次遍历，批量执行所有规则）
+    markdown, n = _line_filter(markdown, _MINERU_LINE_RULES)
+    _record(logs, "行级过滤", n)
+
+    # Phase 2: 正则替换（页眉页脚、CNKI、作者简介、HTML 标签、英文标题空格）
+    markdown, n = _regex_subs(markdown, _MINERU_REGEX_RULES)
+    _record(logs, "正则替换", n)
+
+    # Phase 3: 复杂逻辑（必须在 OCR 修复之前，否则 CJK 行合并会破坏 TOC 检测）
+    markdown, n = _remove_toc(markdown, metadata)
+    _record(logs, "移除目录", n)
+    markdown, n = _remove_table_residue(markdown)
+    _record(logs, "去除表格残留", n)
+
+    # Phase 4: OCR 修复
+    markdown, n = _remove_ocr_spaces_chinese(markdown)
+    _record(logs, "修复 OCR 中文空格", n)
+    markdown, n = _fix_heading_ocr_spaces(markdown)
+    _record(logs, "修复标题内空格", n)
+
+    # Phase 5: 格式化
+    markdown, n = _compress_empty_lines(markdown)
+    _record(logs, "压缩过多空行", n)
+    markdown, n = _normalize_headings(markdown)
+    _record(logs, "标准化标题层级", n)
+    markdown, n = _fix_url_spaces(markdown)
+    _record(logs, "修复 URL 空格", n)
+    markdown = _remove_trailing_spaces(markdown)
+
+    elapsed = round(time.perf_counter() - t0, 3)
+    logs.append(_log("info", f"MinerU 清洗完成，耗时 {elapsed}s"))
+    return CleaningResult(
+        markdown=markdown,
+        stats={
+            "original_length": original_length,
+            "cleaned_length": len(markdown),
+            "reduction_ratio": round(1 - len(markdown) / max(original_length, 1), 3),
+            "elapsed_ms": int(elapsed * 1000),
+            "mode": "mineru",
+        },
+        logs=logs,
+    )
+
+
+# ── 通用流水线规则 ───────────────────────────────────────────────────────────
+
+_GENERIC_REGEX_RULES: list[RegexRule] = [
+    RegexRule("PUA字符", re.compile(r"[-]")),
+    RegexRule("控制字符", re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")),
+    RegexRule("乱码碎片", _GARBLED_RE),
+    RegexRule("中文页眉页脚", _PAGE_FOOTER_RE),
+    RegexRule("重复字符", _BREAK_REPEAT_RE, repl=lambda m: m.group(1) * 3),
+]
+
+
+def clean_markdown(markdown: str) -> CleaningResult:
+    """通用 markdown 清洗"""
+    logs: list[dict] = []
+    t0 = time.perf_counter()
+    original_length = len(markdown)
+
+    # Phase 1: 正则替换
+    markdown, n = _regex_subs(markdown, _GENERIC_REGEX_RULES)
+    _record(logs, "正则清理", n)
+
+    # Phase 2: 表格残留
+    markdown, n = _remove_table_residue(markdown)
+    _record(logs, "去除表格残留", n)
+
+    # Phase 3: 全角半角
+    markdown = _normalize_width(markdown)
+
+    # Phase 4: 行合并
+    markdown, n = _compress_empty_lines(markdown)
+    _record(logs, "压缩过多空行", n)
+    markdown, n = _merge_broken_lines(markdown)
+    _record(logs, "合并碎片行", n)
+    markdown, n = _merge_ultra_short_lines(markdown)
+    _record(logs, "合并极短碎片行", n)
+
+    # Phase 5: 格式化
+    markdown = _normalize_newlines(markdown)
+    markdown = _remove_trailing_spaces(markdown)
+    markdown, n = _normalize_headings(markdown)
+    _record(logs, "标准化标题层级", n)
+
+    elapsed = round(time.perf_counter() - t0, 3)
+    logs.append(_log("info", f"清洗完成，耗时 {elapsed}s"))
+    return CleaningResult(
+        markdown=markdown,
+        stats={
+            "original_length": original_length,
+            "cleaned_length": len(markdown),
+            "reduction_ratio": round(1 - len(markdown) / max(original_length, 1), 3),
+            "elapsed_ms": int(elapsed * 1000),
+        },
+        logs=logs,
+    )

@@ -87,7 +87,7 @@ async def _collect_frames(runner, request) -> list[str]:
 
 
 # ──────────────────────────────────────────────
-# Test 1: 基础 SSE 流（lc-chat 模型）
+# Test 1: 基础 SSE 流（当前主模型）
 # ──────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_real_sse_basic():

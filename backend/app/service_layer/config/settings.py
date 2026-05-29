@@ -50,9 +50,6 @@ class BackendSettings(BaseSettings):
     rerank_model: str = Field(default="BAAI/bge-reranker-v2-m3", alias="RERANK_MODEL")
     rerank_timeout: float = Field(default=30.0, alias="RERANK_TIMEOUT")
 
-    redis_url: str = Field(default="redis://127.0.0.1:6379/0", alias="REDIS_URL")
-    redis_ttl_seconds: int = Field(default=3600, alias="REDIS_TTL_SECONDS")
-
     chroma_data_dir: Path = Field(default=_DATA_ROOT / "chroma_db", alias="CHROMA_DATA_DIR")
     bm25_data_dir: Path = Field(default=_DATA_ROOT / "bm25_index", alias="BM25_DATA_DIR")
     backup_dir: Path = Field(default=_DATA_ROOT / "backups", alias="BACKUP_DIR")

@@ -59,15 +59,15 @@
 
 之后再接。
 
-### 1.3 当前混合态声明
+### 1.3 当前代码状态
 
-当前 `backend/app` 仍然处于混合态：
+三层重组已经完成。`backend/app` 当前结构：
 
-- `api/clients/core/models/pipelines/stores/utils` 是旧实现残留
-- `bootstrap/application/domain/infrastructure/interfaces` 是临时新骨架
-- 两者都不是最终三层目录
+- `data_layer/` — 预处理、索引、检索、存储
+- `agent_layer/` — 会话、规划、运行时、响应、hooks
+- `service_layer/` — API、SSE、配置、启动
 
-因此这份文档描述的是**目标活动架构与执行顺序**，不是声称“后端已经完成重构”。
+旧目录（`api/clients/core/models/pipelines/stores/utils`、`bootstrap/application/domain/infrastructure/interfaces`）已在重组中清理。这份文档描述的是目标活动架构，当前代码已基本对齐。
 
 ### 1.4 活动模型基线说明
 
@@ -114,19 +114,18 @@ Kimi 套餐和相关默认假设已经退出当前活动基线。
 
 ```mermaid
 flowchart LR
-    A["本地 PDF / DOCX"] --> B["数据层：探针 → 路由"]
-    B --> C["数据层：MinerU 解析 → Markdown + JSON + images"]
-    C --> D["数据层：MinerU 专用清洗"]
-    C --> V["数据层：VLM 图片语义（提前启动，与清洗并行）"]
-    D --> E["数据层：语义切分 / 子块关联 / 向量化 / 混合检索索引"]
-    V --> E
-    U["written_context / selection / prompt"] --> F["Agent 层：加权规划 / 检索决策 / tasklist / tool loop"]
-    E --> F
-    F --> G["Agent 层：分批取证 / reflection / 回答生成 / 引用"]
-    G --> H["Agent 层：会话保存 / token 监控 / compact"]
-    H --> I["服务层：SSE / API 响应"]
-    W["WPS 轮询正文"] --> J["服务层：written_context API"]
-    J --> F
+    A["本地 PDF / DOCX"] --> B["数据层：MinerU 精准解析 → Markdown + JSON + images"]
+    B --> C["数据层：MinerU 专用清洗"]
+    B --> V["数据层：VLM 图片语义（提前启动，与清洗并行）"]
+    C --> D["数据层：语义切分 / 子块关联 / 向量化 / 混合检索索引"]
+    V --> D
+    U["written_context / selection / prompt"] --> E["Agent 层：加权规划 / 检索决策 / tasklist / tool loop"]
+    D --> E
+    E --> F["Agent 层：分批取证 / reflection / 回答生成 / 引用"]
+    F --> G["Agent 层：会话保存 / token 监控 / compact"]
+    G --> H["服务层：SSE / API 响应"]
+    W["WPS 轮询正文"] --> I["服务层：written_context API"]
+    I --> E
 ```
 
 ## 5. 数据层
@@ -187,7 +186,7 @@ MinerU 专用清洗器针对实际噪音模式：
 - `json` 结构化元数据
 - 文档块树
 - 图片语义描述
-- 质量报告 / 路由报告
+- 质量报告
 - 原文锚点
 
 这里的 `json` 元数据不是附属品，而是后面做切分、索引、引用、回跳的依据。
@@ -395,15 +394,13 @@ MinerU 专用清洗器针对实际噪音模式：
 
 导入建议使用明确状态：
 
-`queued -> probing -> routing -> transforming -> cleaning -> enriching -> chunking -> embedding -> indexing -> completed / failed`
+`queued -> transforming -> cleaning -> vlm_enriching -> chunking -> embedding -> indexing -> completed / failed`
 
 含义：
 
-- `probing`：探针检测（格式识别、文本密度、图片/表格/公式信号）
-- `routing`：路由决策（A/B/C/D/E）
 - `transforming`：MinerU 解析（PDF → Markdown + JSON + images）；图片到手后立即启动 VLM
 - `cleaning`：MinerU 专用清洗（封面/目录/CNKI/机构行移除 + 标题标准化）
-- `enriching`：VLM 图片语义理解（与 cleaning 并行，提前于 transformation 完成前启动）
+- `vlm_enriching`：VLM 图片语义理解（与 cleaning 并行，提前于 transformation 完成前启动）
 - `chunking`：语义切分、父子块关联、锚点建立
 - `embedding`：向量生成
 - `indexing`：向量索引、关键词索引、元数据写入
@@ -802,7 +799,7 @@ compact 的目标：
 
 建议状态：
 
-`queued -> probing -> routing -> transforming -> cleaning -> enriching -> chunking -> embedding -> indexing -> completed`
+`queued -> transforming -> cleaning -> vlm_enriching -> chunking -> embedding -> indexing -> completed`
 
 异常分支：
 
@@ -873,7 +870,7 @@ compact 的目标：
 服务层统一管理：
 
 - 模型配置
-- 文档解析与路由配置
+- 文档解析配置
 - 索引配置
 - 缓存配置
 - token / compact 阈值配置
@@ -963,7 +960,7 @@ WPS 轮询入口在服务层，但语义属于 Agent 层。
 ```text
 backend/app/
 ├─ data_layer/
-│  ├─ preprocessing/     # 文档探针、路由、清洗、图片语义、结构化
+│  ├─ preprocessing/     # 文档解析、清洗、图片语义、结构化
 │  ├─ indexing/          # retrieval chunk、parent-child、embedding、anchor
 │  ├─ retrieval/         # dense、sparse、fusion
 │  └─ storage/           # 文件、元数据、索引、锚点
@@ -985,13 +982,7 @@ backend/app/
 
 ## 10. 当前代码与目标架构的关系
 
-当前代码里有三类东西：
-
-1. 真正的旧实现
-2. 我前面临时拉出来的新骨架
-3. 尚未清理的过渡代码
-
-它们都不是目标架构本身。
+三层重组已基本完成。代码已按 `data_layer/`、`agent_layer/`、`service_layer/` 组织，各子模块已在对应层下落位。
 
 具体目录和模块级映射见：
 
@@ -999,16 +990,16 @@ backend/app/
 - [后端文件分布重规划](D:/真项目/论文助手/docs/backend/后端文件分布重规划.md)
 - [参考源码借鉴清单](D:/真项目/论文助手/docs/backend/参考源码借鉴清单.md)
 
-### 10.1 不应继续强化的目录概念
+### 10.1 已清理的旧目录
 
-- 旧 `services / stores / clients / pipelines`
-- 临时 `application / domain / infrastructure / interfaces`
+以下旧目录已在三层重组中清理，不再存在：
 
-不是说其中代码一定没用，而是这些目录的边界不再代表目标职责。
+- `services / stores / clients / pipelines`
+- `application / domain / infrastructure / interfaces`
 
-### 10.2 迁移原则
+### 10.2 后续维护原则
 
-后续重构不是“把旧代码平移到新目录”，而是：
+后续代码变更不是"把旧代码平移到新目录"，而是：
 
 1. 先按三层重新定义职责
 2. 再决定哪些旧代码可以复用
@@ -1016,6 +1007,7 @@ backend/app/
 
 ## 11. 当前已锁定的关键决策
 
+- MinerU 精准解析直接处理，无需探针和路由
 - PDF 解析主链路固定为 MinerU 精准解析 API（模型驱动，PP-DocLayoutV2 + SLANet+），失败即失败，不保留低质量降级路径
 - MinerU 专用清洗针对实际噪音模式（封面/目录/CNKI/机构行/URL），不再需要 PUA/伪表格/碎片行修复
 - VLM 在 MinerU 返回图片的那一刻就提前启动，与 transformation 剩余工作和 cleaning 并行

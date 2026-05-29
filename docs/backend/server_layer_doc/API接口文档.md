@@ -95,7 +95,7 @@
   "components": {
     "chroma": {"status": "ok", "collection_count": 5, "total_vectors": 1234},
     "bm25": {"status": "ok", "doc_count": 1234},
-    "redis": {"status": "ok", "detail": "connected"},
+    "cache": {"status": "ok", "mode": "memory"},
     "llm_config": {"status": "ok"},
     "embedding_config": {"status": "ok"}
   }
@@ -107,7 +107,7 @@
 | `status` | string | `"ok"` / `"degraded"` / `"error"` |
 | `components.chroma` | object | 向量库状态，含 `collection_count`、`total_vectors` |
 | `components.bm25` | object | BM25 状态，含 `doc_count` |
-| `components.redis` | object | Redis 状态，含 `detail` |
+| `components.cache` | object | 进程内缓存状态，固定为 `memory` |
 | `components.llm_config` | object | LLM 配置状态 |
 | `components.embedding_config` | object | Embedding 配置状态 |
 
@@ -475,7 +475,7 @@ data: {"status": "done", "step": null, "paper_id": null}
 
 ## 6. Assistant — 助手上下文
 
-> 助手端点用于 WPS 插件与后端之间的编辑器上下文同步。部分功能依赖 Redis，Redis 不可用时返回降级响应。
+> 助手端点用于 WPS 插件与后端之间的编辑器上下文同步。当前实现使用进程内内存单例保存 `written_context / selection`，不再走外部缓存。
 
 ### `PUT /assistant/written-context`
 
@@ -491,11 +491,6 @@ data: {"status": "done", "step": null, "paper_id": null}
 {"status": "ok", "session_id": "xxx"}
 ```
 
-Redis 不可用时返回降级响应（非错误）:
-```json
-{"status": "degraded", "message": "Redis 不可用，上下文未持久化"}
-```
-
 ### `GET /assistant/written-context/{session_id}`
 
 获取当前已写内容。
@@ -504,7 +499,7 @@ Redis 不可用时返回降级响应（非错误）:
 
 **响应** `200`: `ContextState`
 ```json
-{"session_id": "xxx", "written_context": "用户已写内容...", "selection": ""}
+{"session_id": "xxx", "written_context": "用户已写内容...", "selection": "当前选区..."}
 ```
 
 ### `PUT /assistant/selection`
@@ -516,7 +511,7 @@ Redis 不可用时返回降级响应（非错误）:
 {"session_id": "xxx", "selection": "用户选中的文本..."}
 ```
 
-**响应** `200`: 同 `written-context`，支持降级。
+**响应** `200`: 同 `written-context`，返回当前完整 editor context 快照。
 
 ### `GET /assistant/selection/{session_id}`
 
@@ -526,7 +521,7 @@ Redis 不可用时返回降级响应（非错误）:
 
 **响应** `200`: `ContextState`
 ```json
-{"session_id": "xxx", "written_context": "", "selection": "选中的文本..."}
+{"session_id": "xxx", "written_context": "用户已写内容...", "selection": "选中的文本..."}
 ```
 
 ### `POST /assistant/polling/start`
@@ -548,8 +543,6 @@ Redis 不可用时返回降级响应（非错误）:
 {"status": "ok", "message": "轮询已启动，间隔 5s"}
 ```
 
-**错误** `503`: `{"detail": "编辑器上下文存储不可用（Redis 未连接）"}`
-
 ### `POST /assistant/polling/stop`
 
 停止编辑器轮询。
@@ -558,8 +551,6 @@ Redis 不可用时返回降级响应（非错误）:
 ```json
 {"status": "ok", "message": "轮询已停止"}
 ```
-
-**错误** `503`: `{"detail": "编辑器上下文存储不可用（Redis 未连接）"}`
 
 ---
 
@@ -1016,7 +1007,7 @@ Agent 查询请求体（`/query` 端点使用）。
 | 422 | 请求体校验失败 | Pydantic 字段类型错误 |
 | 500 | 服务器内部错误 | 未捕获异常 |
 | 502 | 外部服务调用失败 | 模型发现 API 不可达 |
-| 503 | 服务不可用 | Redis 未连接 |
+| 503 | 服务不可用 | 内存会话态未初始化 |
 
 ### 业务错误码（`code` 字段）
 

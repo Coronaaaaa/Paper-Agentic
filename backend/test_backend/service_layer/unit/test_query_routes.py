@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,22 +11,30 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def _build_app(*, redis_ok=False, has_editor_store=True, has_window_store=True):
-    """构造带 mock container 的 FastAPI app"""
+def _build_app(*, has_editor_store=True, has_window_store=True, turn_runner=None):
+    """构造带内存态 container 的 FastAPI app"""
     from app.service_layer.api.query_routes import router
+    from app.agent_layer.session.editor_context_store import EditorContextStore
+    from app.agent_layer.session.persistence import SessionPersistence
+    from app.agent_layer.session.window_store import ConversationWindowStore
 
     app = FastAPI()
     app.include_router(router)
 
-    container = MagicMock()
-    container.chat_model = MagicMock()
+    container = SimpleNamespace(
+        chat_model=MagicMock(),
+        vector_store=MagicMock(),
+        keyword_search=MagicMock(),
+        embedding_client=MagicMock(),
+        conversation_window=ConversationWindowStore(max_messages=20) if has_window_store else None,
+        editor_context_store=EditorContextStore() if has_editor_store else None,
+        session_persistence=SessionPersistence(),
+        settings=SimpleNamespace(context_window_tokens=32000, max_output_tokens=4096),
+        reflection_chat_model=MagicMock(),
+    )
     container.chat_model.max_context_tokens = 32000
-    container.vector_store = MagicMock()
-    container.keyword_search = MagicMock()
-    container.embedding_client = MagicMock()
-    container.redis_health = {"status": "ok" if redis_ok else "unavailable"}
-    container.conversation_window = MagicMock() if has_window_store else None
-    container.editor_context_store = MagicMock() if has_editor_store else None
+    if turn_runner is not None:
+        container.turn_runner = turn_runner
 
     app.state.container = container
     return app, container
@@ -41,7 +50,7 @@ class TestQueryMetadataEvent:
         mock_runner = MagicMock()
 
         async def fake_run(request):
-            yield 'event: metadata\ndata: {"request_id":"r1","session_id":"s1","used_inputs":{"prompt":1.0,"selection":0.0,"written_context":0.0,"rag_evidence":0.0},"context_tokens":10,"remaining_tokens":31990,"remaining_ratio":0.9997,"retrieval_planned":true,"degraded_flags":[],"redis_mode":"unavailable"}\n\n'
+            yield 'event: metadata\ndata: {"request_id":"r1","session_id":"s1","used_inputs":{"prompt":1.0,"selection":0.0,"written_context":0.0,"rag_evidence":0.0},"context_tokens":10,"remaining_tokens":31990,"remaining_ratio":0.9997,"retrieval_planned":true,"degraded_flags":[],"cache_mode":"memory"}\n\n'
             yield 'event: done\ndata: {}\n\n'
 
         mock_runner.run = fake_run
@@ -70,7 +79,7 @@ class TestQueryMetadataEvent:
         mock_runner = MagicMock()
 
         async def fake_run(request):
-            yield 'event: metadata\ndata: {"request_id":"r1","session_id":"s1","used_inputs":{"prompt":1.0},"context_tokens":10,"remaining_tokens":31990,"remaining_ratio":0.9997,"retrieval_planned":true,"degraded_flags":[],"redis_mode":"unavailable"}\n\n'
+            yield 'event: metadata\ndata: {"request_id":"r1","session_id":"s1","used_inputs":{"prompt":1.0},"context_tokens":10,"remaining_tokens":31990,"remaining_ratio":0.9997,"retrieval_planned":true,"degraded_flags":[],"cache_mode":"memory"}\n\n'
             yield 'event: done\ndata: {}\n\n'
 
         mock_runner.run = fake_run
@@ -94,7 +103,7 @@ class TestQueryMetadataEvent:
                 assert "remaining_ratio" in data
                 assert "retrieval_planned" in data
                 assert "degraded_flags" in data
-                assert "redis_mode" in data
+                assert "cache_mode" in data
                 break
 
 
@@ -121,64 +130,53 @@ class TestQueryEmptyPrompt:
 
 
 class TestRunnerContainerInjection:
-    """验证 _build_runner 从 container 取依赖"""
+    """验证 _build_runner 共享容器内存态"""
 
-    def test_runner_uses_container_deps(self):
+    def test_runner_prefers_container_turn_runner(self):
         from app.service_layer.api.query_routes import _build_runner
+        from app.agent_layer.orchestration.turn_runner import TurnRunner
 
+        app, container = _build_app()
+        real_runner = TurnRunner(
+            chat_model=container.chat_model,
+            snapshot_builder=MagicMock(),
+            retrieval_gate=MagicMock(),
+            source_mapper=MagicMock(),
+            block_streamer=MagicMock(),
+            window_store=container.conversation_window,
+            editor_context_store=container.editor_context_store,
+            persistence=container.session_persistence,
+        )
+        container.turn_runner = real_runner
         mock_request = MagicMock()
-        container = MagicMock()
-        container.chat_model = MagicMock()
-        container.chat_model.max_context_tokens = 32000
-        container.vector_store = MagicMock(name="vs")
-        container.keyword_search = MagicMock(name="kw")
-        container.embedding_client = MagicMock(name="ec")
-        container.conversation_window = MagicMock(name="cw")
-        container.editor_context_store = MagicMock(name="ecs")
-        container.redis_health = {"status": "ok"}
         mock_request.app.state.container = container
 
         runner = _build_runner(mock_request)
 
-        assert runner._vector_store is container.vector_store
-        assert runner._keyword_search is container.keyword_search
-        assert runner._embedding_client is container.embedding_client
-        assert runner._redis_mode == "connected"
+        assert runner is real_runner
 
-    def test_runner_degraded_without_redis(self):
-        """conversation_window 存在但 Redis 不 ok → degraded"""
+    def test_runner_falls_back_to_container_memory_state(self):
         from app.service_layer.api.query_routes import _build_runner
 
         mock_request = MagicMock()
-        container = MagicMock()
-        container.chat_model = MagicMock()
-        container.chat_model.max_context_tokens = 32000
-        container.vector_store = MagicMock()
-        container.keyword_search = MagicMock()
-        container.embedding_client = MagicMock()
-        container.conversation_window = MagicMock()
-        container.editor_context_store = MagicMock()
-        container.redis_health = {"status": "unavailable"}
+        _, container = _build_app()
         mock_request.app.state.container = container
 
         runner = _build_runner(mock_request)
-        assert runner._redis_mode == "degraded"
 
-    def test_runner_fallback_when_no_window_store(self):
+        assert runner._window_store is container.conversation_window
+        assert runner._editor_context_store is container.editor_context_store
+        assert runner._persistence is container.session_persistence
+        assert runner._cache_mode == "memory"
+
+    def test_runner_falls_back_when_container_missing(self):
         from app.service_layer.api.query_routes import _build_runner
 
         mock_request = MagicMock()
-        container = MagicMock()
-        container.chat_model = MagicMock()
-        container.chat_model.max_context_tokens = 32000
-        container.vector_store = MagicMock()
-        container.keyword_search = MagicMock()
-        container.embedding_client = MagicMock()
-        container.conversation_window = None
-        container.editor_context_store = None
-        container.redis_health = {"status": "unavailable"}
-        mock_request.app.state.container = container
+        mock_request.app.state.container = None
 
         runner = _build_runner(mock_request)
+
         assert runner._window_store is not None
         assert runner._editor_context_store is not None
+        assert runner._persistence is not None

@@ -40,7 +40,7 @@
 1. ~~当前真正的对话入口仍是 `/api/v1/conversations/chat`，不是前端 V2 需要的 `POST /api/v1/query`。~~ ✅ 已统一：`/api/v1/query` 是主入口，`/api/v1/conversations/chat` 也已转发到 TurnRunner。
 2. `written_context / selection` 已接入 snapshot_freeze → planning → query assembly（按权重排序）。
 3. ~~当前 SSE 事件仍是 `metadata / chunk / done / error`，而前端 V2 已切到 `thinking / block / sources / done / error`。~~ ✅ 已切换到 `thinking / block / sources / done / error` 协议。
-4. 当前回答载体仍是“原始文本流 + 编号引用”，不是结构化 `ContentBlock`。
+4. ~~当前回答载体仍是“原始文本流 + 编号引用”，不是结构化 `ContentBlock`。~~ ✅ 已完成：`ContentBlock` 已全面实现，包含 `BlockParagraph`、`BlockHeading`、`BlockList`、`BlockCitationText`、`BlockTable`、`BlockCode`、`BlockDivider`。
 5. `compact`、活动窗口、request 级模型选择、reflection loop 都还没有接上主链。
 
 结论：
@@ -198,53 +198,66 @@ stateDiagram-v2
 ```text
 agent_layer/
   orchestration/
-    turn_runner.py
+    turn_runner.py        # 一轮请求编排
+    tool_loop.py          # ToolRegistry + execute_tool_loop()，最大 5 轮
   contracts/
-    query.py
-    events.py
-    artifacts.py
+    query.py              # AskRequest, FrozenTurnSnapshot
+    sse_events.py         # SSE 事件定义
+    content_block.py      # ContentBlock 结构定义
+    source_card.py        # SourceCard 结构定义
+    used_inputs.py        # UsedInputs 结构定义
   planning/
-    snapshot_builder.py
-    retrieval_gate.py
-    title_builder.py
-  retrieval/
-    evidence_loop.py
-    context_packer.py
-  reflection/
-    evidence_judge.py
+    snapshot_builder.py   # 快照冻结
+    retrieval_gate.py     # RAG 门控判断
+    input_assembler.py    # 查询组装，含加权输入和排序
   response/
-    block_streamer.py
-    citation_resolver.py
-    source_mapper.py
+    block_streamer.py     # ContentBlock 流式输出
+    citation_resolver.py  # 引用解析
+    source_mapper.py      # 检索证据 → SourceCard[]
   session/
-    window_store.py
-    editor_context_store.py
-    persistence.py
+    window_store.py       # 活动窗口
+    editor_context_store.py  # 编辑器上下文
+    persistence.py        # 持久化
+    # 由 AppContainer 持有的进程内内存单例
   hooks/
-    compact.py
+    compact.py            # compact 摘要
+    reflection.py         # judge_evidence() + reflect()，判定证据充分性
   runtime/
-    chat_model.py
-    token_budget.py
+    chat_model.py         # 模型调用封装
+    token_budget.py       # token 预算管理
 ```
 
 ### 8.1 关键职责边界
 
 - `orchestration/turn_runner.py`
   - 只负责编排一轮请求，不直接写 API，不直接写底层索引查询。
+- `orchestration/tool_loop.py`
+  - ToolRegistry + execute_tool_loop()，最大 5 轮工具调用，含补检索、标题生成、compact 等。
+- `contracts/sse_events.py`
+  - 定义 SSE 事件结构：`thinking / block / sources / done / error`。
+- `contracts/content_block.py`
+  - ContentBlock 结构定义：`BlockParagraph`、`BlockHeading`、`BlockList`、`BlockCitationText`、`BlockTable`、`BlockCode`、`BlockDivider`。
+- `contracts/source_card.py`
+  - SourceCard 结构定义，含文献信息、页码、章节、预览内容等。
+- `contracts/used_inputs.py`
+  - UsedInputs 结构定义，记录本轮实际采用了哪些输入源及权重。
 - `planning/snapshot_builder.py`
   - 把前端 payload、进程内 editor context、最近窗口、摘要组合成冻结快照。
 - `planning/retrieval_gate.py`
   - 判断本轮是否真的需要 RAG。
-- `retrieval/evidence_loop.py`
-  - 执行分批取证，不直接负责最终回答。
-- `reflection/evidence_judge.py`
-  - 给出 `supported / insufficient / conflicting / off_track` 判定。
+- `planning/input_assembler.py`
+  - 查询组装，含加权输入和排序；将加权后的 query 交付给后续 retrieval 流程。
 - `response/block_streamer.py`
   - 将最终回答转换为 `ContentBlock` 流。
 - `response/source_mapper.py`
   - 把检索证据映射成前端 `SourceCard[]`。
 - `session/persistence.py`
   - 保存用户消息、结构化回答、来源、摘要、used_inputs。
+- `session/window_store.py`、`session/editor_context_store.py`、`session/persistence.py`
+  - 共同构成当前活动会话态，全部由 `AppContainer` 作为进程内单例持有。
+- `hooks/reflection.py`
+  - `judge_evidence()`：给出 `supported / insufficient / conflicting / off_track` 判定。
+  - `reflect()`：生成后回顾，评估回答质量与证据匹配度。
 
 ## 9. SSE 契约
 

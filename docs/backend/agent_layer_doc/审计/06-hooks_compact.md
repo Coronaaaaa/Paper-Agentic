@@ -7,16 +7,16 @@
 
 ## 结论
 
-- 当前 `compact` 只是一个可调用函数，不是运行时能力。
+- 当前 `compact` 已经挂到 `TurnRunner` 主链上，不再只是一个独立函数。
 
 ## 发现
 
 - [P1] 当前只有“给一串消息 -> 返回摘要”能力，没有触发条件、没有上下文预算、没有重注入逻辑。
   - 证据：`compact.py:12-34`
 
-- [P1] 当前实现没有保存摘要，也没有把摘要送回后续消息窗口。
+- [P1] 现在摘要会写入 `SessionPersistence`，并在 `_build_messages` 中作为历史摘要重注入。
 
-- [P2] `compact` 成功或失败只记日志，不会进入请求级状态流。
+- [P2] `compact` 结果会影响下一轮消息组装；如果后续要暴露给前端，再单独加观测事件。
 
 ## 建议
 
@@ -26,6 +26,6 @@
    - `remaining_tokens`
    - `remaining_ratio`
 3. 摘要生成后要：
-   - 保存长期事实
-   - 更新 Redis `history_summary`
+   - 保存到 `SessionPersistence`
+   - 清理或截断进程内窗口
    - 进入下一轮上下文组装

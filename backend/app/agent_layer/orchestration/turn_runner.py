@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -110,7 +111,7 @@ class TurnRunner:
         keyword_search: Any | None = None,
         embedding_client: Any | None = None,
         tool_registry: ToolRegistry | None = None,
-        cache_mode: str = "unavailable",
+        cache_mode: str = "memory",
         reflection_model: Any | None = None,
     ) -> None:
         self._chat_model = chat_model
@@ -157,6 +158,7 @@ class TurnRunner:
                 max_context = 30000
             remaining_tokens = max(0, max_context - context_tokens)
             remaining_ratio = remaining_tokens / max_context if max_context > 0 else 0.0
+            compacted = False
 
             # ── Compact：剩余空间不足时压缩历史 ──
             # 注意：FrozenTurnSnapshot 是 Pydantic BaseModel，默认 frozen=False 允许属性赋值。
@@ -168,6 +170,7 @@ class TurnRunner:
                 if summary:
                     snapshot.history_summary = summary
                     snapshot.recent_window = []
+                    compacted = True
                     # 重新计算 token 用量
                     context_tokens = estimate_tokens(
                         (snapshot.prompt or "")
@@ -282,7 +285,7 @@ class TurnRunner:
 
             yield SourcesEvent(data=sources).to_sse_frame()
 
-            await self._persist(snapshot, full_text, blocks, sources)
+            await self._persist(snapshot, full_text, blocks, sources, compacted=compacted)
 
             yield DoneEvent().to_sse_frame()
 
@@ -292,7 +295,22 @@ class TurnRunner:
             yield ErrorEvent(**err).to_sse_frame()
 
     async def _freeze_snapshot(self, request: AskRequest, request_id: str) -> Any:
-        editor_context = await self._editor_context_store.get(request.session_id)
+        editor_context = None
+        freeze_fn = getattr(self._editor_context_store, "freeze", None)
+        if callable(freeze_fn):
+            try:
+                frozen_context = freeze_fn(request.session_id, request_id)
+                if inspect.isawaitable(frozen_context):
+                    frozen_context = await frozen_context
+                editor_context = frozen_context
+            except Exception:
+                logger.warning(
+                    "editor_context freeze failed for session %s",
+                    request.session_id,
+                    exc_info=True,
+                )
+        if editor_context is None:
+            editor_context = await self._editor_context_store.get(request.session_id)
         recent_window = await self._window_store.get_messages(request.session_id)
         history_summary = await self._persistence.get_summary(request.session_id) or ""
 
@@ -375,8 +393,12 @@ class TurnRunner:
 
     def _build_messages(self, snapshot: Any, context: str) -> list[dict]:
         """使用快照中冻结的历史，不再读取 live window_store"""
-        system_msg = _RAG_SYSTEM_PROMPT.format(context=context) if context else _NO_RAG_SYSTEM_PROMPT
-        messages: list[dict] = [{"role": "system", "content": system_msg}]
+        system_parts = [
+            _RAG_SYSTEM_PROMPT.format(context=context) if context else _NO_RAG_SYSTEM_PROMPT
+        ]
+        if snapshot.history_summary:
+            system_parts.append(f"历史摘要：\n{snapshot.history_summary}")
+        messages: list[dict] = [{"role": "system", "content": "\n\n".join(system_parts)}]
 
         for msg in snapshot.recent_window[-10:]:
             messages.append({"role": msg["role"], "content": msg["content"]})
@@ -390,8 +412,24 @@ class TurnRunner:
         full_text: str,
         blocks: list,
         sources: list,
+        compacted: bool = False,
     ) -> None:
         """持久化会话，失败不影响 SSE 输出（降级记录日志）"""
+        summary = (snapshot.history_summary or "").strip()
+        summary_saved = False
+        if summary:
+            try:
+                await self._persistence.save_summary(snapshot.session_id, summary)
+                summary_saved = True
+            except Exception:
+                logger.warning("summary persist failed for session %s", snapshot.session_id, exc_info=True)
+
+        if compacted and summary_saved:
+            try:
+                await self._window_store.clear(snapshot.session_id)
+            except Exception:
+                logger.warning("window_store compact failed for session %s", snapshot.session_id, exc_info=True)
+
         if not full_text:
             return
 

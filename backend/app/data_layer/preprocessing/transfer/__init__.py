@@ -5,6 +5,7 @@
 """
 
 from .pipeline import (
+    IngestResult,
     PipelineEvent,
     PipelineOrchestrator,
     PipelineStage,
@@ -16,4 +17,5 @@ __all__ = [
     "PipelineState",
     "PipelineStage",
     "PipelineEvent",
+    "IngestResult",
 ]

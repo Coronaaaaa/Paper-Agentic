@@ -1,7 +1,7 @@
 # data_layer 架构设计
 
 > 身份：data_layer 活动设计稿
-> 最后更新：2026-05-29
+> 最后更新：2026-05-29（与代码对齐）
 > 下次审查：代码变更时
 
 ## 1. 文档定位
@@ -10,7 +10,7 @@
 
 它定义：
 
-1. data_layer 的三层子架构
+1. data_layer 的四层子架构
 2. 每个子模块的职责、输入输出、内部类型
 3. 层间 IO 约定
 4. 并发模型与调度策略
@@ -25,7 +25,8 @@
 ```text
 data_layer/
 ├── preprocessing/          # 预处理层
-│   ├── transfer/                   # ① 调度中枢：pipeline engine + scheduler
+│   ├── transfer/                   # ① 唯一编排入口（PipelineOrchestrator）
+│   │   └── pipeline.py             # 文档导入/删除/重建 + 内部阶段调度
 │   ├── transformation/             # ② 转换：PDF → markdown + json + 图片
 │   ├── cleaning/                   # ③ 清洗：格式规范化、去噪
 │   ├── vlm_understanding/          # ④ VLM：图片/表单/公式语义理解
@@ -39,7 +40,11 @@ data_layer/
 ├── storage/                # 持久化层
 │   ├── config/                     # 配置：读取用户/系统配置
 │   ├── file_management/            # 文件管理：PDF/图片/产物目录
-│   ├── sqlite_runtime/             # 运行时数据库：library/conversation/import_task repo
+│   ├── sqlite_runtime/             # 运行时数据库：library/import_task repo + 内部类型
+│   │   ├── _types.py               #   内部类型（LibraryItem/ImportTask/ConversationSession 等）
+│   │   ├── library_repo.py
+│   │   ├── import_task_repo.py
+│   │   └── conversation_repo.py
 │   └── monitor/                    # 监控：延迟、存储健康、日志
 │
 └── retrieval/                      # 检索层
@@ -104,26 +109,16 @@ data_layer/
 
 ### 3.1 transfer/
 
-**职责**：预处理层的调度中枢。接收 probe 输出，决定路由，编排整个 pipeline。
+**职责**：预处理层的调度中枢。接收导入任务，编排整个 pipeline。
 
 **输入**：
-- ProbeResult（来自 probe）
 - PDF 文件路径
+- 导入任务配置
 
 **输出**：
 - 调度各子模块执行
 - 异常处理（降级 / 终止）
 - 事件推送给 monitor
-
-**路由决策**：
-
-| 路由 | 条件 | transformation 策略 |
-|---|---|---|
-| A | 有文字层，无图片/表单/公式 | MarkItDown 主提取 |
-| B | 有文字层 + 有图片 | MarkItDown + 页面转图 |
-| C | 有文字层 + 表单/表格/公式 | MarkItDown + 表单提取 + 远程增强 |
-| D | 结构复杂，多模态混合 | MarkItDown + 多工具组合 |
-| E | 扫描件，几乎无文字层 | OCR API + VLM API |
 
 **调度模式**：
 
@@ -132,22 +127,20 @@ data_layer/
 ```text
 transfer 主循环：
   while pipeline 未完成:
-    poll probe → 得到特征
-    决定路由 → 启动 transformation
     poll transformation 产出：
       如果有图片 → 启动 vlm_understanding worker（就绪）
       如果有 markdown → 启动 cleaning worker
     poll cleaning + vlm_understanding：
       两者都完成 → 启动 chunking
-    poll chunking → 完成 → 通知持久化层
+    poll chunking → 完成 → 通知索引层
 ```
 
 **状态机**：
 
 ```text
-queued → probing → routing → transforming → cleaning/vlm_enriching → chunking → done
-                                              ↑                          │
-                                              └──── 降级重试 ────────────┘
+queued → transforming → cleaning/vlm_enriching → chunking → done
+                             ↑                          │
+                             └──── 降级重试 ────────────┘
 ```
 
 异常分支：
@@ -157,13 +150,12 @@ queued → probing → routing → transforming → cleaning/vlm_enriching → c
 
 ---
 
-### 3.3 transformation/
+### 3.2 transformation/
 
-**职责**：根据 transfer 的路由决策，将 PDF 转换为 markdown + metadata + 图片。
+**职责**：将 PDF 转换为 markdown + metadata + 图片（通过 MinerU API）。
 
 **输入**：
 - PDF 文件路径
-- transfer 的路由决策（A/B/C/D/E）
 
 **输出**：
 - ConversionResult：markdown + metadata + 图片路径列表
@@ -174,28 +166,21 @@ queued → probing → routing → transforming → cleaning/vlm_enriching → c
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | markdown | str | 提取的 markdown 文本 |
-| metadata | dict | 文件信息、探针数据、路由、复杂度 |
+| metadata | dict | 文件信息、复杂度等 |
 | images | list[dict] | [{"page": int, "path": str}] |
 | success | bool | 是否成功 |
 | error | str \| None | 失败原因 |
 
 **并发模型**：
 
-- **执行器**：ProcessPoolExecutor（CPU + 磁盘 IO 密集型，绕 GIL）
-- **默认并发**：5 进程
-- **自适应校准**：
-  - 首次运行：默认 5 进程，测量每个文件耗时
-  - 计算最优并发：`optimal = cores * (1 + wait_ratio)`
-  - 下限 5，上限 `cores * 2`
-  - 校准结果存 `_concurrency.json`
-  - 后续运行直接读取已校准值
-- **批量处理**：支持批量 PDF 输入，进程池并发转换
-
-**实现参考**：`backend/test_backend/UnitTesting-Docling&&Anthropic'sPDF&DOCX/test_pdf_router.py`
+- **执行器**：async/await（MinerU API 是 IO 密集型，无需 ProcessPoolExecutor）
+- **MinerU 客户端**：httpx AsyncClient + 自动重试（抖动 + 指数退避，最多 3 次）
+- **超限切分**：页数 >180 或文件 >190MB 时自动切分、逐段上传、拼接结果
+- **进度回调**：轮询 MinerU 任务状态，每次回调触发 PipelineEvent
 
 ---
 
-### 3.4 cleaning/
+### 3.3 cleaning/
 
 **职责**：对 transformation 产出的 markdown 做格式清洗和规范化。
 
@@ -246,7 +231,7 @@ queued → probing → routing → transforming → cleaning/vlm_enriching → c
 
 ---
 
-### 3.5 vlm_understanding/
+### 3.4 vlm_understanding/
 
 **职责**：对 transformation 产出的图片做 VLM 语义理解，生成描述并回填到 markdown。
 
@@ -311,7 +296,7 @@ queued → probing → routing → transforming → cleaning/vlm_enriching → c
 
 ---
 
-### 3.6 chunking/
+### 3.5 chunking/
 
 **职责**：将清洗后的 markdown 切分为语义完整的 chunk，生成锚点。
 
@@ -372,16 +357,14 @@ queued → probing → routing → transforming → cleaning/vlm_enriching → c
 
 ---
 
-### 3.7 monitor/（预处理层）
+### 3.6 monitor/（预处理层）
 
 **职责**：全程监控预处理 pipeline 的执行状态。
 
 **事件类型**：
 
 | 事件 | 说明 |
-|---|---|
-| probe.started / completed | 探针开始/完成 |
-| routing.decision | 路由决策结果 |
+|---|---|---|
 | transformation.started / completed / failed | 转换开始/完成/失败 |
 | cleaning.started / completed | 清洗开始/完成 |
 | vlm.image.started / completed / failed | 单张图 VLM 开始/完成/失败 |
@@ -404,7 +387,7 @@ queued → probing → routing → transforming → cleaning/vlm_enriching → c
 
 ---
 
-## 4. 持久化层详细设计
+## 4. 索引层详细设计
 
 ### 4.1 embedding/
 
@@ -417,35 +400,13 @@ queued → probing → routing → transforming → cleaning/vlm_enriching → c
 - 向量列表
 
 **实现**：
-- 硅基流动 API（Qwen3-Embedding-8B，1536 维）
+- 硅基流动 API（Qwen3-Embedding-4B，1536 维）
 - 支持批量处理 + 并发控制
 - 自动重试（3 次，指数退避）
 
 ---
 
-### 4.2 config/
-
-**职责**：读取用户配置和系统默认配置。
-
-**默认配置**：
-
-| 项 | 默认值 |
-|---|---|
-| VLM API 地址 | https://api.coro0.top/v1 |
-| VLM 模型 | qwen3-vl:235b |
-| Embedding API 地址 | 硅基流动 |
-| Embedding 模型 | Qwen3-Embedding-8B |
-| Embedding 维度 | 1536 |
-| Rerank 模型 | Qwen3-Reranker-8B |
-
-**来源**：
-- 前端传递的用户配置（覆盖默认值）
-- `.env` 文件
-- 系统默认值
-
----
-
-### 4.3 chroma_store/
+### 4.2 chroma_store/
 
 **职责**：向量库的增删改查，软删除策略。
 
@@ -473,7 +434,41 @@ queued → probing → routing → transforming → cleaning/vlm_enriching → c
 
 ---
 
-### 4.4 file_management/
+## 5. 持久化层详细设计
+
+### 5.1 config/
+
+**职责**：读取用户配置和系统默认配置。
+
+**默认配置**：
+
+| 项 | 默认值 |
+|---|---|
+| VLM API 地址 | https://api.coro0.top/v1 |
+| VLM 模型 | qwen3-vl:235b |
+| Embedding API 地址 | 硅基流动 |
+| Embedding 模型 | Qwen3-Embedding-4B |
+| Embedding 维度 | 1536 |
+| Rerank 模型 | Qwen3-Reranker-8B |
+
+**来源**：
+- 前端传递的用户配置（覆盖默认值）
+- `.env` 文件
+- 系统默认值
+
+---
+
+### 5.2 sqlite_runtime/
+
+**职责**：存放运行时数据库表（library_items、conversation_sessions、import_tasks）。
+
+**实现**：`library_repo.py`、`conversation_repo.py`、`import_task_repo.py`
+
+> **注意**：`conversation_repo.py` 在代码中位于 data_layer/storage/sqlite_runtime/，但从架构角度看属于 Agent 层。当前 placement 是一个待后续解决的遗留问题。
+
+---
+
+### 5.3 file_management/
 
 **职责**：管理文档文件、图片、产物的目录结构和生命周期。
 
@@ -499,7 +494,7 @@ data/
 
 ---
 
-### 4.5 monitor/（持久化层）
+### 5.4 monitor/（持久化层）
 
 **职责**：监控持久化层的运行状态。
 
@@ -507,24 +502,21 @@ data/
 
 | 项 | 说明 |
 |---|---|
-| embedding 延迟 | 单次 / 批量 embedding 耗时 |
-| chroma 写入延迟 | 单次 upsert 耗时 |
-| chroma 查询延迟 | 单次 query 耗时 |
 | 存储健康 | ChromaDB 文档数、BM25 索引大小 |
 | 磁盘占用 | papers/ parsed/ 目录大小 |
 
 ---
 
-## 5. 检索层详细设计
+## 6. 检索层详细设计
 
-### 5.1 dense/
+### 6.1 dense/
 
 **职责**：向量相似度检索。
 
 **输入**：query 向量 + topk + 可选 paper_ids
 **输出**：Doc 列表（id + content + metadata）
 
-### 5.2 sparse/
+### 6.2 sparse/
 
 **职责**：BM25 关键词检索。
 
@@ -533,7 +525,7 @@ data/
 
 **实现**：jieba 分词 + rank_bm25
 
-### 5.3 fusion/
+### 6.3 fusion/
 
 **职责**：融合 dense + sparse 结果。
 
@@ -550,14 +542,15 @@ score(doc) = Σ 1 / (k + rank_i)
 
 ---
 
-## 6. 层间 IO 约定
+## 7. 层间 IO 约定
 
 层与层之间不共享 Python 类型，靠 IO 格式传递：
 
 | 交接点 | 方向 | 格式 |
 |---|---|---|
-| 预处理 → 持久化 | 写 | `data/parsed/{doc_id}/` 下的文件 |
-| 持久化 → 检索 | 读 | ChromaDB + BM25 索引 |
+| 预处理 → 索引 | 写 | `data/parsed/{doc_id}/` 下的文件 |
+| 预处理 → 存储 | 写 | 文件元信息、目录管理 |
+| 索引 → 检索 | 读 | ChromaDB + BM25 索引 |
 | 检索 → Agent 层 | 调用 | 函数返回值（Doc 列表） |
 | API → transfer | 调用 | 文件路径 + 配置参数 |
 
@@ -567,33 +560,33 @@ score(doc) = Σ 1 / (k + rank_i)
 |---|---|
 | markdown.json | 清洗后的 markdown 全文 |
 | structured.json | 锚点 + visual_blocks + 统计 |
-| extraction_report.json | 路由、工具、降级、耗时 |
+| extraction_report.json | 转换、降级、耗时 |
 | images/ | 提取的图片文件 |
 
 ---
 
-## 7. 与现有代码的映射
+## 8. 与现有代码的映射
 
 | 现有文件 | 新位置 | 处理方式 |
 |---|---|---|
-| `conversion/pdf_probe.py` | `preprocessing/probe/` | 搬迁，基本可用 |
-| `conversion/pdf_router.py` | `preprocessing/transformation/` | 拆分：路由逻辑移入 transfer，转换逻辑保留 |
-| `conversion/markitdown_adapter.py` | `preprocessing/transformation/` | 搬迁 |
-| `conversion/docling_adapter.py` | 删除 | 死代码，Docling 不是当前默认链 |
 | `normalization/vision_model.py` | `preprocessing/vlm_understanding/` | 重写为完整 pipeline |
 | `chunking/semantic_chunker.py` | `preprocessing/chunking/` | 增强：加锚点、加嵌入相似度切分 |
-| `indexing/embedding_client.py` | `storage/embedding/` | 搬迁 |
-| `storage/vector_index.py` | `storage/chroma_store/` + `retrieval/dense/` | 拆分：写入 vs 查询 |
-| `storage/keyword_index.py` | `storage/chroma_store/` + `retrieval/sparse/` | 拆分：写入 vs 查询 |
-| `storage/sqlite_runtime.py` | `storage/chroma_store/` | 保留 library_items / import_tasks，conversation 迁移到 Agent 层 |
+| `indexing/embedding_client.py` | `indexing/embedding/` | 搬迁 |
+| `storage/vector_index.py` | `indexing/chroma_store/` + `retrieval/dense/` | 拆分：写入 vs 查询 |
+| `storage/keyword_index.py` | `indexing/chroma_store/` + `retrieval/sparse/` | 拆分：写入 vs 查询 |
+| `storage/sqlite_runtime.py` | `storage/sqlite_runtime/` | 保留 library_items / import_tasks，内部类型定义在 `_types.py` |
 | `retrieval/fusion.py` | `retrieval/fusion/` | 搬迁 |
-| `contracts/*` | 各层内部自定义 | 不再共享，删除 contracts/ |
+| `storage/document_service.py` | `preprocessing/transfer/pipeline.py` | 已合并进 PipelineOrchestrator（唯一编排入口） |
+| `contracts/*` | 已删除 | 各层内部定义自己的类型，不跨层共享 |
 
 ---
 
-## 8. 仍待落地的事项
+## 9. 仍待落地的事项
 
 - [x] DOCX 支持（MinerU 原生支持 docx/doc/pptx/xlsx，同级 pipeline）
+- [x] contracts/ 删除（类型迁入 sqlite_runtime/_types.py 和 service_layer/api/errors.py）
+- [x] DocumentIngestService 合并进 PipelineOrchestrator（唯一编排入口）
+- [x] PipelineMonitor / StorageMonitor 串进主链路
 - [ ] Rerank 接入（检索层后续增强）
 - [ ] OCR 增强（vlm_understanding 后续扩展）
 - [ ] 知识图谱集成

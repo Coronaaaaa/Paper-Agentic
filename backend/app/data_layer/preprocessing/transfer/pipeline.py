@@ -100,6 +100,8 @@ class PipelineOrchestrator:
         keyword_index=None,
         directory_manager=None,
         soft_delete_manager=None,
+        pipeline_monitor=None,
+        storage_monitor=None,
     ):
         self._monitor_callback = monitor_callback
         self._states: dict[str, PipelineState] = {}
@@ -110,6 +112,9 @@ class PipelineOrchestrator:
         # 文档级依赖
         self._directory_manager = directory_manager
         self._soft_delete_manager = soft_delete_manager
+        # 监控
+        self._pipeline_monitor = pipeline_monitor
+        self._storage_monitor = storage_monitor
 
     # ── 文档级操作（外部入口）──────────────────────────────────
 
@@ -403,6 +408,10 @@ class PipelineOrchestrator:
         state = PipelineState(task_id=task_id, file_path=file_path)
         self._states[task_id] = state
 
+        # 启动监控
+        if self._pipeline_monitor:
+            self._pipeline_monitor.start_task(task_id, str(file_path))
+
         try:
             # 阶段 1：转换（内部会提前启动 VLM）
             vlm_task = await self._run_transformation(state, output_dir)
@@ -422,12 +431,18 @@ class PipelineOrchestrator:
             state.completed_at = time.time()
             self._emit(state, "pipeline.completed", "预处理完成")
 
+            if self._pipeline_monitor:
+                self._pipeline_monitor.complete_task(task_id)
+
         except Exception as e:
             state.stage = PipelineStage.FAILED
             state.error = str(e)
             state.completed_at = time.time()
             self._emit(state, "pipeline.failed", f"预处理失败: {e}")
             logger.error("Pipeline 失败 [%s]: %s", task_id, e, exc_info=True)
+
+            if self._pipeline_monitor:
+                self._pipeline_monitor.fail_task(task_id, str(e))
 
         return state
 
@@ -548,6 +563,7 @@ class PipelineOrchestrator:
             return
 
         paper_id = state.file_path.stem
+        sm = self._storage_monitor  # 简写
 
         # Embedding
         state.stage = PipelineStage.EMBEDDING
@@ -555,9 +571,13 @@ class PipelineOrchestrator:
 
         texts = [c.content for c in chunks]
         try:
+            t0 = time.perf_counter()
             vectors = await self._embedding_client.embed(texts)
+            embed_ms = int((time.perf_counter() - t0) * 1000)
             state._vectors = vectors
             self._emit(state, "embedding.completed", f"embedding 完成，共 {len(vectors)} 个向量")
+            if sm:
+                sm.record_latency("embedding", embed_ms, chunk_count=len(chunks))
         except Exception as e:
             self._emit(state, "embedding.failed", f"embedding 失败: {e}")
             raise
@@ -613,6 +633,15 @@ class PipelineOrchestrator:
 
         self._emit(state, "indexing.completed", f"索引完成，Chroma: {inserted}，BM25: {len(doc_ids)}")
 
+        # 更新存储健康
+        if sm:
+            try:
+                chroma_count = self._vector_index._collection.count() if self._vector_index._collection else 0
+                bm25_count = len(self._keyword_index._doc_ids) if hasattr(self._keyword_index, "_doc_ids") else 0
+                sm.update_health(chroma_doc_count=chroma_count, bm25_doc_count=bm25_count)
+            except Exception:
+                pass  # 监控不应阻断主链
+
     def get_state(self, task_id: str) -> PipelineState | None:
         """获取 pipeline 状态"""
         return self._states.get(task_id)
@@ -632,6 +661,36 @@ class PipelineOrchestrator:
             self._monitor_callback(pipeline_event)
 
         logger.info("[%s] %s: %s", state.task_id, event, message)
+
+        # 桥接到 PipelineMonitor
+        self._bridge_to_monitor(state, event, data or {})
+
+    def _bridge_to_monitor(self, state: PipelineState, event: str, data: dict):
+        """将 pipeline 事件桥接到 PipelineMonitor"""
+        monitor = self._pipeline_monitor
+        if monitor is None:
+            return
+
+        task_id = state.task_id
+
+        # 阶段开始
+        if event.endswith(".started") and not event.startswith("pipeline"):
+            stage = event.rsplit(".", 1)[0]
+            monitor.start_stage(task_id, stage)
+
+        # 阶段完成
+        elif event.endswith(".completed") and not event.startswith("pipeline"):
+            stage = event.rsplit(".", 1)[0]
+            monitor.complete_stage(task_id, stage, details=data)
+
+        # 阶段失败
+        elif event.endswith(".failed") and not event.startswith("pipeline"):
+            stage = event.rsplit(".", 1)[0]
+            monitor.fail_stage(task_id, stage, data.get("error", "unknown"))
+
+        # 降级
+        elif event == "pipeline.degraded":
+            monitor.degrade_stage(task_id, state.stage.value, message=data.get("reason", "degraded"))
 
 
 # ── 模块级辅助函数 ────────────────────────────────────────────

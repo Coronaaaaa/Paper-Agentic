@@ -1,4 +1,4 @@
-name: CI
+name: Backend CI
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
 
       - name: Run unit tests
         working-directory: backend
-        run: uv run pytest tests/agent_layer/unit tests/data_layer/unit tests/service_layer/unit -v --tb=short
+        run: uv run pytest test_backend/agent_layer/unit test_backend/data_layer/unit test_backend/service_layer/unit -v --tb=short
 
   backend-lint:
     runs-on: ubuntu-latest

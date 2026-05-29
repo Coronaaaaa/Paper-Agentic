@@ -12,10 +12,11 @@ services:
       - backend-log:/app/log
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "uv", "run", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/v1/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
 
 volumes:
   backend-data:

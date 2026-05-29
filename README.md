@@ -100,7 +100,18 @@ uv run python main.py
 
 后端运行在 `http://127.0.0.1:8000`。Swagger 文档: `http://127.0.0.1:8000/docs`
 
-### 2. 构建前端
+### 2. Docker 一键启动
+
+```bash
+# 需要先安装 Docker + Docker Compose
+cp backend/.env.example backend/.env
+# 编辑 .env 填入 API Key
+docker compose up --build -d
+```
+
+或使用启动脚本：`bash start.sh`
+
+### 3. 构建前端
 
 ```bash
 cd frontend
@@ -136,13 +147,13 @@ npx wpsjs debug
 cd backend
 
 # 单元测试
-uv run pytest tests/agent_layer/unit tests/data_layer/unit tests/service_layer/unit -v
+uv run pytest test_backend/agent_layer/unit test_backend/data_layer/unit test_backend/service_layer/unit -v
 
 # 集成测试（需真实 API key）
-uv run pytest tests/data_layer/integration -v -s
+uv run pytest test_backend/data_layer/integration -v -s
 
 # 全部测试
-uv run pytest tests/ -v
+uv run pytest test_backend/ -v
 ```
 
 ## API 接口
@@ -158,6 +169,10 @@ uv run pytest tests/ -v
 | GET | `/api/v1/import/artifacts/{id}` | 导入中间产物查询 |
 | POST | `/api/v1/query` | Agent 查询（SSE 流式） |
 | POST | `/api/v1/conversations/chat` | 对话（SSE 流式） |
+| GET | `/api/v1/conversations` | 会话列表 |
+| POST | `/api/v1/conversations` | 创建会话 |
+| PUT | `/api/v1/conversations/{id}/title` | 重命名会话 |
+| GET | `/api/v1/conversations/search?q=` | 搜索会话+消息 |
 | GET | `/api/v1/papers` | 论文列表 |
 | GET | `/api/v1/library/items` | 文献库列表 |
 | POST | `/api/v1/models` | 模型发现 |
@@ -175,3 +190,5 @@ uv run pytest tests/ -v
 | PDF 解析 | MinerU API（唯一处理器） |
 | 存储 | SQLite（对话/文献/任务） |
 | 缓存 | 进程内内存 |
+| 部署 | Docker + Docker Compose |
+| CI | GitHub Actions（后端单元测试 + Docker 构建） |

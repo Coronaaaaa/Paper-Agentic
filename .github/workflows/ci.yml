@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync
+
+      - name: Run unit tests
+        working-directory: backend
+        run: uv run pytest tests/agent_layer/unit tests/data_layer/unit tests/service_layer/unit -v --tb=short
+
+  backend-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync
+
+      - name: Check imports
+        working-directory: backend
+        run: uv run python -c "from app.main import create_app; app = create_app(); print(f'Routes: {len(app.routes)}')"
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [backend-test, backend-lint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t paper-assistant-backend ./backend
+
+      - name: Verify image
+        run: docker run --rm paper-assistant-backend uv run python -c "from app.main import create_app; print('OK')"

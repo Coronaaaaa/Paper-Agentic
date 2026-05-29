@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.data_layer.contracts.library_item import ImportTask, LibraryItem
+from app.data_layer.storage.sqlite_runtime._types import ImportTask, LibraryItem
 from app.service_layer.schemas.library import (
     ImportRequest,
     ImportResponse,

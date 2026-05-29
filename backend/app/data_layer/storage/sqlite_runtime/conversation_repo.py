@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from app.data_layer.contracts.conversation import (
-    ConversationMessage,
-    ConversationSession,
-)
+from ._types import ConversationMessage, ConversationSession
 
 
 class SQLiteConversationRepo:

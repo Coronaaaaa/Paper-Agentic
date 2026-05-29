@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from app.data_layer.contracts.library_item import ImportTask
+from ._types import ImportTask
 
 
 class SQLiteImportTaskRepo:

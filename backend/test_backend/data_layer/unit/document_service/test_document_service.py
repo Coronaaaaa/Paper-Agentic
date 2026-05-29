@@ -1,4 +1,4 @@
-"""DocumentIngestService 测试
+"""PipelineOrchestrator 测试
 
 DOC-U01: DOCX 同级支持
 DOC-U02: 软删除/硬删除
@@ -18,17 +18,17 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.data_layer.storage.document_service import (
-    DocumentIngestService,
+from app.data_layer.preprocessing.transfer.pipeline import (
+    PipelineOrchestrator,
     IngestResult,
     _resolve_visual_block_anchors,
+    _build_structured,
 )
 from app.data_layer.indexing.chroma_store.soft_delete import SoftDeleteManager
 
 
 def _make_service(tmp_dir, **overrides):
-    """构造 DocumentIngestService 实例"""
-    config = overrides.get("config", MagicMock())
+    """构造 PipelineOrchestrator 实例"""
     vector_index = overrides.get("vector_index", MagicMock())
     keyword_index = overrides.get("keyword_index", MagicMock())
     soft_delete = overrides.get("soft_delete", None)
@@ -38,8 +38,7 @@ def _make_service(tmp_dir, **overrides):
         soft_delete = SoftDeleteManager(index_dir=str(tmp_dir / "soft_delete"))
         soft_delete.init()
 
-    return DocumentIngestService(
-        config=config,
+    return PipelineOrchestrator(
         vector_index=vector_index,
         keyword_index=keyword_index,
         soft_delete_manager=soft_delete,
@@ -240,7 +239,7 @@ class TestDocU05:
             "char_count": 5000,
         }
         dir_manager.create_document_dirs("test_paper")
-        structured = service._build_structured("test_paper", [chunk], metadata)
+        structured = _build_structured("test_paper", [chunk], metadata, directory_manager=dir_manager)
 
         # 顶层字段
         required_top = ["document_id", "paper_id", "doc_type", "source_file_path",
@@ -291,7 +290,7 @@ class TestDocU05:
             "file_name": "paper.docx",
         }
         dir_manager.create_document_dirs("test_docx")
-        structured = service._build_structured("test_docx", [chunk], metadata)
+        structured = _build_structured("test_docx", [chunk], metadata, directory_manager=dir_manager)
 
         assert structured["doc_type"] == "docx"
         assert structured["source_file_path"] == "/test/paper.docx"

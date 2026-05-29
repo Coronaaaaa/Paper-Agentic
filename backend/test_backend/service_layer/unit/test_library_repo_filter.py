@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.data_layer.contracts.library_item import LibraryItem
+from app.data_layer.storage.sqlite_runtime._types import LibraryItem
 from app.data_layer.storage.sqlite_runtime.library_repo import SQLiteLibraryRepo
 
 

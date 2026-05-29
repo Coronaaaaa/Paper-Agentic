@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File as FastAPIFile
 from fastapi.responses import StreamingResponse
 
-from app.data_layer.contracts.library_item import ImportTask, LibraryItem
+from app.data_layer.storage.sqlite_runtime._types import ImportTask, LibraryItem
 from app.service_layer.schemas.library import ImportStartResponse, ImportStatusResponse
 
 logger = logging.getLogger("paper-assistant")

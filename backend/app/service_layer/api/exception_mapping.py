@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.data_layer.contracts.errors import ConflictError, DomainError, NotFoundError, ServiceUnavailableError, ValidationError
+from .errors import ConflictError, DomainError, NotFoundError, ServiceUnavailableError, ValidationError
 
 
 def register_exception_handlers(app: FastAPI) -> None:

@@ -1,3 +1,8 @@
+"""服务层领域异常
+
+仅服务层使用，data_layer 不应依赖此模块。
+"""
+
 from __future__ import annotations
 
 

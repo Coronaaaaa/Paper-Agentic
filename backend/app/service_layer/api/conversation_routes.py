@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.agent_layer.contracts.query import AskRequest
-from app.data_layer.contracts.conversation import ConversationSession
-from app.data_layer.contracts.library_item import utc_now_iso
+from app.data_layer.storage.sqlite_runtime._types import ConversationSession, utc_now_iso
 from app.service_layer.schemas.conversation import (
     ChatRequest,
     ConversationMessageOut,
     ConversationSessionOut,
 )
-
-logger = logging.getLogger("paper-assistant")
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -78,7 +74,7 @@ async def chat(body: ChatRequest, request: Request):
         enable_rag=True,
     )
 
-    runner = _build_runner()
+    runner = _build_runner(request)
 
     async def event_stream():
         async for frame in runner.run(ask_req):

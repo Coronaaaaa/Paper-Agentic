@@ -11,22 +11,25 @@ from app.data_layer.indexing.chroma_store.vector_index import VectorIndex
 from app.data_layer.indexing.chroma_store.keyword_index import KeywordIndex
 from app.data_layer.indexing.chroma_store.soft_delete import SoftDeleteManager
 from app.data_layer.storage.file_management.directory_manager import DirectoryManager
-from app.data_layer.storage.document_service import DocumentIngestService
+from app.data_layer.preprocessing.transfer.pipeline import PipelineOrchestrator
 from app.data_layer.storage.sqlite_runtime import (
     SQLiteConversationRepo,
     SQLiteLibraryRepo,
     SQLiteImportTaskRepo,
 )
+from app.agent_layer.session.editor_context_store import EditorContextStore
+from app.agent_layer.session.persistence import SessionPersistence
+from app.agent_layer.session.window_store import ConversationWindowStore
 from app.service_layer.config.settings import BackendSettings
 
 
 @dataclass
 class AppContainer:
     settings: BackendSettings
-    redis_client: object | None = field(default=None, init=False)
-    conversation_window: object | None = field(default=None, init=False)
-    editor_context_store: object | None = field(default=None, init=False)
-    redis_health: dict = field(default_factory=lambda: {"status": "unavailable", "detail": "not initialized"}, init=False)
+    conversation_window: ConversationWindowStore = field(init=False)
+    editor_context_store: EditorContextStore = field(init=False)
+    session_persistence: SessionPersistence = field(init=False)
+    _turn_runner: "TurnRunner | None" = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.settings.ensure_runtime_dirs()
@@ -71,8 +74,7 @@ class AppContainer:
         )
 
         # ── 文档导入服务 ──
-        self.document_ingest = DocumentIngestService(
-            config=self.settings,
+        self.document_ingest = PipelineOrchestrator(
             vector_index=self.vector_store,
             keyword_index=self.keyword_search,
             soft_delete_manager=self.soft_delete_manager,
@@ -88,32 +90,26 @@ class AppContainer:
 
         # ── 导入进度总线 ──
         from app.service_layer.sse.import_progress_bus import ImportProgressBus
+
         self.import_progress_bus = ImportProgressBus()
+        self.conversation_window = ConversationWindowStore.from_context_window(
+            context_window_tokens=self.settings.context_window_tokens,
+            max_output_tokens=self.settings.max_output_tokens,
+        )
+        self.editor_context_store = EditorContextStore()
+        self.session_persistence = SessionPersistence()
 
     @property
     def turn_runner(self) -> "TurnRunner":
-        """构建 TurnRunner 实例（含 ToolRegistry）"""
+        """构建并缓存 TurnRunner 实例（含 ToolRegistry）"""
+        if self._turn_runner is not None:
+            return self._turn_runner
+
         from app.agent_layer.orchestration.turn_runner import TurnRunner
         from app.agent_layer.planning.retrieval_gate import should_retrieve
         from app.agent_layer.planning.snapshot_builder import build_snapshot
         from app.agent_layer.response.block_streamer import stream_to_blocks
         from app.agent_layer.response.source_mapper import map_sources
-        from app.agent_layer.session.editor_context_store import EditorContextStore
-        from app.agent_layer.session.persistence import SessionPersistence
-        from app.agent_layer.session.window_store import ConversationWindowStore
-
-        window_store = self.conversation_window or ConversationWindowStore.from_context_window(
-            context_window_tokens=self.settings.context_window_tokens,
-            max_output_tokens=self.settings.max_output_tokens,
-        )
-        editor_store = self.editor_context_store or EditorContextStore()
-        persistence = SessionPersistence()
-
-        cache_mode = "unavailable"
-        if self.redis_health.get("status") == "ok":
-            cache_mode = "connected"
-        elif self.conversation_window is not None:
-            cache_mode = "degraded"
 
         tool_registry = _build_tool_registry(
             chat_model=self.chat_model,
@@ -122,22 +118,23 @@ class AppContainer:
             embedding_client=self.embedding_client,
         )
 
-        return TurnRunner(
+        self._turn_runner = TurnRunner(
             chat_model=self.chat_model,
             snapshot_builder=build_snapshot,
             retrieval_gate=should_retrieve,
             source_mapper=map_sources,
             block_streamer=stream_to_blocks,
-            window_store=window_store,
-            editor_context_store=editor_store,
-            persistence=persistence,
+            window_store=self.conversation_window,
+            editor_context_store=self.editor_context_store,
+            persistence=self.session_persistence,
             vector_store=self.vector_store,
             keyword_search=self.keyword_search,
             embedding_client=self.embedding_client,
             tool_registry=tool_registry,
-            cache_mode=cache_mode,
+            cache_mode="memory",
             reflection_model=self.reflection_chat_model,
         )
+        return self._turn_runner
 
     async def initialize(self) -> None:
         self.vector_store.init()
@@ -157,7 +154,7 @@ class AppContainer:
         components = {
             "chroma": {"status": "ok", **self.vector_store.stats},
             "bm25": {"status": "ok", "doc_count": self.keyword_search.doc_count},
-            "redis": self.redis_health,
+            "cache": {"status": "ok", "mode": "memory"},
             "llm_config": {"status": "ok" if self.settings.llm_configured else "unavailable"},
             "embedding_config": {"status": "ok" if self.settings.embedding_configured else "unavailable"},
         }

@@ -41,13 +41,27 @@ class TestContainerAssembly:
         assert hasattr(container, "chat_model")
         assert hasattr(container, "embedding_client")
         assert hasattr(container, "conversation_repo")
+        assert hasattr(container, "conversation_window")
+        assert hasattr(container, "editor_context_store")
+        assert hasattr(container, "session_persistence")
 
         # 文件管理
         assert hasattr(container, "soft_delete_manager")
         assert hasattr(container, "directory_manager")
 
+        runner1 = container.turn_runner
+        runner2 = container.turn_runner
+        assert runner1 is runner2
+        assert runner1._window_store is container.conversation_window
+        assert runner1._editor_context_store is container.editor_context_store
+        assert runner1._persistence is container.session_persistence
+        assert runner1._cache_mode == "memory"
+
+        health = container.health()
+        assert health["components"]["cache"] == {"status": "ok", "mode": "memory"}
+
     def test_document_ingest_has_required_dependencies(self, tmp_path):
-        """DocumentIngestService 装配了所有需要的依赖"""
+        """PipelineOrchestrator 装配了所有需要的依赖"""
         from app.service_layer.config.settings import BackendSettings
 
         settings = BackendSettings(

@@ -1,9 +1,9 @@
 """真 API 端到端测试
 
-VLM: moonshotai/kimi-k2.6 和 qwen3-vl:235b（via api.coro0.top）
-Embedding: SiliconFlow Qwen3-Embedding-4B（强制 1536 维）
+VLM: 从 BackendSettings 读取（VLM_API_KEY / VLM_BASE_URL / VLM_MODEL）
+Embedding: 从 BackendSettings 读取（EMBEDDING_API_KEY / EMBEDDING_BASE_URL）
 
-运行: uv run pytest tests/data_layer/test_real_api.py -v -s
+运行: uv run pytest test_backend/data_layer/integration/test_real_api.py -v -s
 """
 
 from __future__ import annotations
@@ -15,16 +15,25 @@ import sys
 import pytest
 import httpx
 
-# ── API 配置（从环境变量读取） ────────────────────────────
-AGGREGATION_TOKEN = os.environ.get("AGGREGATION_TOKEN", "")
-AGGREGATION_BASE = "https://api.coro0.top/v1"
-
-SILICONFLOW_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
-SILICONFLOW_BASE = "https://api.siliconflow.cn/v1"
-
-VLM_MODELS = ["moonshotai/kimi-k2.6", "qwen3-vl:235b"]
-EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-4B"
-EMBEDDING_DIMENSIONS = 1536
+# ── API 配置（从 BackendSettings 读取，fallback 到环境变量） ──
+try:
+    from app.service_layer.config.settings import get_settings
+    _s = get_settings()
+    VLM_API_KEY = _s.vlm_api_key
+    VLM_BASE_URL = _s.vlm_base_url or "https://api.coro0.top/v1"
+    VLM_MODEL = _s.vlm_model or "qwen3-vl:235b"
+    EMBEDDING_API_KEY = _s.embedding_api_key
+    EMBEDDING_BASE_URL = _s.embedding_base_url or "https://api.siliconflow.cn/v1"
+    EMBEDDING_MODEL = _s.embedding_model or "Qwen/Qwen3-Embedding-4B"
+    EMBEDDING_DIMENSIONS = _s.embedding_dimensions
+except Exception:
+    VLM_API_KEY = os.environ.get("VLM_API_KEY", "")
+    VLM_BASE_URL = os.environ.get("VLM_BASE_URL", "https://api.coro0.top/v1")
+    VLM_MODEL = os.environ.get("VLM_MODEL", "qwen3-vl:235b")
+    EMBEDDING_API_KEY = os.environ.get("EMBEDDING_API_KEY", "")
+    EMBEDDING_BASE_URL = os.environ.get("EMBEDDING_BASE_URL", "https://api.siliconflow.cn/v1")
+    EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-4B")
+    EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "1536"))
 
 
 # ── 辅助函数 ──────────────────────────────────────────────
@@ -66,25 +75,22 @@ def _create_test_image_base64() -> tuple[str, str]:
 class TestVLMRealAPI:
     """VLM 真实 API 测试"""
 
-    @pytest.mark.parametrize("model", VLM_MODELS)
-    def test_vlm_call(self, model):
+    def test_vlm_call(self):
         """调用 VLM API 并验证返回"""
-        if not AGGREGATION_TOKEN:
-            pytest.skip("需要 AGGREGATION_TOKEN 环境变量")
-        if model == "moonshotai/kimi-k2.6":
-            pytest.xfail("moonshotai/kimi-k2.6 在聚合站超时（可能不可用）")
+        if not VLM_API_KEY:
+            pytest.skip("需要 VLM_API_KEY 环境变量")
         media_type, b64_data = _create_test_image_base64()
 
         async def _call():
             async with httpx.AsyncClient(timeout=120) as client:
                 resp = await client.post(
-                    f"{AGGREGATION_BASE}/chat/completions",
+                    f"{VLM_BASE_URL}/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {AGGREGATION_TOKEN}",
+                        "Authorization": f"Bearer {VLM_API_KEY}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": model,
+                        "model": VLM_MODEL,
                         "messages": [
                             {
                                 "role": "user",
@@ -102,7 +108,7 @@ class TestVLMRealAPI:
         resp = asyncio.run(_call())
 
         print(f"\n{'='*60}")
-        print(f"模型: {model}")
+        print(f"模型: {VLM_MODEL}")
         print(f"状态码: {resp.status_code}")
 
         if resp.status_code != 200:
@@ -118,26 +124,23 @@ class TestVLMRealAPI:
         assert content, "VLM 返回内容为空"
         assert len(content) > 0
 
-    @pytest.mark.parametrize("model", VLM_MODELS)
-    def test_vlm_academic_prompt(self, model):
+    def test_vlm_academic_prompt(self):
         """模拟学术论文图片描述场景"""
-        if not AGGREGATION_TOKEN:
-            pytest.skip("需要 AGGREGATION_TOKEN 环境变量")
-        if model == "moonshotai/kimi-k2.6":
-            pytest.xfail("moonshotai/kimi-k2.6 在聚合站超时（可能不可用）")
+        if not VLM_API_KEY:
+            pytest.skip("需要 VLM_API_KEY 环境变量")
         media_type, b64_data = _create_test_image_base64()
         prompt = "这张图片来自一篇学术论文。请用中文描述图片内容，要求提取关键图示、趋势、数值和图中文字。直接输出一段简洁描述，不超过200字。"
 
         async def _call():
             async with httpx.AsyncClient(timeout=120) as client:
                 resp = await client.post(
-                    f"{AGGREGATION_BASE}/chat/completions",
+                    f"{VLM_BASE_URL}/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {AGGREGATION_TOKEN}",
+                        "Authorization": f"Bearer {VLM_API_KEY}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": model,
+                        "model": VLM_MODEL,
                         "messages": [
                             {
                                 "role": "user",
@@ -155,7 +158,7 @@ class TestVLMRealAPI:
         resp = asyncio.run(_call())
 
         print(f"\n{'='*60}")
-        print(f"模型: {model}")
+        print(f"模型: {VLM_MODEL}")
         print(f"状态码: {resp.status_code}")
 
         assert resp.status_code == 200, f"VLM API 调用失败: {resp.status_code}"
@@ -174,14 +177,14 @@ class TestEmbeddingRealAPI:
 
     def test_embedding_single(self):
         """单条文本 embedding"""
-        if not SILICONFLOW_KEY:
-            pytest.skip("需要 SILICONFLOW_API_KEY 环境变量")
+        if not EMBEDDING_API_KEY:
+            pytest.skip("需要 EMBEDDING_API_KEY 环境变量")
         async def _call():
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
-                    f"{SILICONFLOW_BASE}/embeddings",
+                    f"{EMBEDDING_BASE_URL}/embeddings",
                     headers={
-                        "Authorization": f"Bearer {SILICONFLOW_KEY}",
+                        "Authorization": f"Bearer {EMBEDDING_API_KEY}",
                         "Content-Type": "application/json",
                     },
                     json={
@@ -210,8 +213,8 @@ class TestEmbeddingRealAPI:
 
     def test_embedding_batch(self):
         """批量文本 embedding"""
-        if not SILICONFLOW_KEY:
-            pytest.skip("需要 SILICONFLOW_API_KEY 环境变量")
+        if not EMBEDDING_API_KEY:
+            pytest.skip("需要 EMBEDDING_API_KEY 环境变量")
         texts = [
             "深度学习在自然语言处理中的应用",
             "机器学习与计算机视觉综述",
@@ -221,9 +224,9 @@ class TestEmbeddingRealAPI:
         async def _call():
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
-                    f"{SILICONFLOW_BASE}/embeddings",
+                    f"{EMBEDDING_BASE_URL}/embeddings",
                     headers={
-                        "Authorization": f"Bearer {SILICONFLOW_KEY}",
+                        "Authorization": f"Bearer {EMBEDDING_API_KEY}",
                         "Content-Type": "application/json",
                     },
                     json={
@@ -255,14 +258,14 @@ class TestEmbeddingRealAPI:
 
     def test_embedding_dimensions_enforced(self):
         """验证强制 1536 维度"""
-        if not SILICONFLOW_KEY:
-            pytest.skip("需要 SILICONFLOW_API_KEY 环境变量")
+        if not EMBEDDING_API_KEY:
+            pytest.skip("需要 EMBEDDING_API_KEY 环境变量")
         async def _call():
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
-                    f"{SILICONFLOW_BASE}/embeddings",
+                    f"{EMBEDDING_BASE_URL}/embeddings",
                     headers={
-                        "Authorization": f"Bearer {SILICONFLOW_KEY}",
+                        "Authorization": f"Bearer {EMBEDDING_API_KEY}",
                         "Content-Type": "application/json",
                     },
                     json={

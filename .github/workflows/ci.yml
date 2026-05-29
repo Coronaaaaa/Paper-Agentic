@@ -51,7 +51,7 @@ jobs:
 
       - name: Check imports
         working-directory: backend
-        run: uv run python -c "from app.main import create_app; app = create_app(); print(f'Routes: {len(app.routes)}')"
+        run: uv run python -c "from app.main import create_app; app = create_app(); print('Routes:', len(app.routes))"
 
   docker-build:
     runs-on: ubuntu-latest

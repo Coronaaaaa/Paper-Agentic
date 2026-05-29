@@ -11,10 +11,10 @@ import os
 import pytest
 from pathlib import Path
 
-from app.data_layer.preprocessing.transformation import convert_pdf, ConversionResult
+from app.data_layer.preprocessing.mineru_processing import convert_pdf, ConversionResult
 
-_mineru_token = os.environ.get("MINERU_TOKEN", "")
-requires_mineru = pytest.mark.skipif(not _mineru_token, reason="需要 MINERU_TOKEN 环境变量")
+_mineru_token = os.environ.get("MINERU_API_KEY", "") or os.environ.get("MINERU_TOKEN", "")
+requires_mineru = pytest.mark.skipif(not _mineru_token, reason="需要 MINERU_API_KEY 环境变量")
 
 
 class TestTransU01:
@@ -83,42 +83,27 @@ class TestTransC01:
         assert result.metadata["page_count"] > 0
 
 
-class TestTransDocx:
-    """DOCX 多格式支持"""
+class TestPdfSplitter:
+    """PDF 拆分工具"""
 
-    def test_mineru_adapter_accepts_docx_suffix(self):
-        """mineru_adapter 不拒绝 .docx 后缀"""
-        from app.data_layer.preprocessing.transformation.mineru_adapter import (
-            _MINERU_SUPPORTED_SUFFIXES,
-        )
-        assert ".docx" in _MINERU_SUPPORTED_SUFFIXES
-        assert ".doc" in _MINERU_SUPPORTED_SUFFIXES
-        assert ".pptx" in _MINERU_SUPPORTED_SUFFIXES
-        assert ".xlsx" in _MINERU_SUPPORTED_SUFFIXES
-
-    @pytest.mark.asyncio
-    async def test_mineru_adapter_rejects_unsupported_suffix(self, tmp_dir):
-        """mineru_adapter 拒绝不支持的后缀"""
-        from app.data_layer.preprocessing.transformation.mineru_adapter import convert_with_mineru
-
-        fake_file = tmp_dir / "test.xyz"
-        fake_file.write_text("fake")
-
-        result = await convert_with_mineru(fake_file)
-        assert result.success is False
-        assert "不支持的文件格式" in result.error
-
-    @pytest.mark.asyncio
-    async def test_convert_pdf_nonexistent_still_fails(self, tmp_dir):
-        """不存在的文件仍然返回失败"""
-        result = await convert_pdf(tmp_dir / "nonexistent.docx")
-        assert result.success is False
-
-    def test_mineru_client_page_count_non_pdf_returns_zero(self, tmp_dir):
-        """非 PDF 文件 _get_pdf_page_count 返回 0"""
-        from app.data_layer.preprocessing.transformation.mineru_client import _get_pdf_page_count
+    def test_page_count_non_pdf_returns_zero(self, tmp_dir):
+        """非 PDF 文件 get_pdf_page_count 返回 0"""
+        from app.data_layer.preprocessing.mineru_processing.pdf_splitter import get_pdf_page_count
 
         docx_file = tmp_dir / "test.docx"
-        docx_file.write_text("fake docx content")
+        docx_file.write_text("fake content")
+        assert get_pdf_page_count(docx_file) == 0
 
-        assert _get_pdf_page_count(docx_file) == 0
+    def test_compute_chunks(self):
+        """切分计算"""
+        from app.data_layer.preprocessing.mineru_processing.pdf_splitter import compute_chunks
+
+        chunks = compute_chunks(400, max_pages=180)
+        assert chunks == ["1-180", "181-360", "361-400"]
+
+    def test_compute_chunks_no_split(self):
+        """不需要切分"""
+        from app.data_layer.preprocessing.mineru_processing.pdf_splitter import compute_chunks
+
+        chunks = compute_chunks(100, max_pages=180)
+        assert chunks == ["1-100"]

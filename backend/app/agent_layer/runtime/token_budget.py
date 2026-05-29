@@ -11,7 +11,12 @@ def estimate_tokens(text: str) -> int:
 
 
 class TokenBudget:
-    def __init__(self, max_context: int = 30000, max_output: int = 4000) -> None:
+    def __init__(self, max_context: int = 0, max_output: int = 0) -> None:
+        if not max_context or not max_output:
+            from app.service_layer.config.settings import get_settings
+            _s = get_settings()
+            max_context = max_context or _s.context_window_tokens
+            max_output = max_output or _s.max_output_tokens
         self._max_context = max_context
         self._max_output = max_output
         self._used = 0

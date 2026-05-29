@@ -20,6 +20,7 @@ from app.data_layer.storage.sqlite_runtime import (
 from app.agent_layer.session.editor_context_store import EditorContextStore
 from app.agent_layer.session.persistence import SessionPersistence
 from app.agent_layer.session.window_store import ConversationWindowStore
+from app.service_layer.bootstrap.import_monitor import ImportMonitor
 from app.service_layer.config.settings import BackendSettings
 
 
@@ -65,7 +66,7 @@ class AppContainer:
         # ── 文件与删除管理 ──
         self.soft_delete_manager = SoftDeleteManager(
             index_dir=str(self.settings.chroma_data_dir),
-            retention_days=7,
+            retention_days=self.settings.soft_delete_retention_days,
         )
         self.directory_manager = DirectoryManager(
             papers_dir=str(self.settings.papers_dir),
@@ -92,6 +93,18 @@ class AppContainer:
         from app.service_layer.sse.import_progress_bus import ImportProgressBus
 
         self.import_progress_bus = ImportProgressBus()
+
+        # ── 导入监控（统一调度层）──
+        from app.data_layer.preprocessing.monitor.pipeline_monitor import PipelineMonitor
+        from app.data_layer.storage.monitor.storage_monitor import StorageMonitor
+
+        self.pipeline_monitor = PipelineMonitor()
+        self.storage_monitor = StorageMonitor()
+        self.import_monitor = ImportMonitor(
+            progress_bus=self.import_progress_bus,
+            pipeline_monitor=self.pipeline_monitor,
+            storage_monitor=self.storage_monitor,
+        )
         self.conversation_window = ConversationWindowStore.from_context_window(
             context_window_tokens=self.settings.context_window_tokens,
             max_output_tokens=self.settings.max_output_tokens,
@@ -181,20 +194,22 @@ def _build_tool_registry(
     registry = ToolRegistry()
 
     async def _retrieve(args: dict) -> dict:
+        from app.service_layer.config.settings import get_settings
+        _s = get_settings()
         query = args.get("query", "")
         paper_ids = args.get("paper_ids")
         dense_results = []
         sparse_results = []
         try:
             qv = await embedding_client.embed_single(query)
-            dense_results = vector_store.query(qv, topk=20, paper_ids=paper_ids)
+            dense_results = vector_store.query(qv, topk=_s.retrieval_topk_dense, paper_ids=paper_ids)
         except Exception:
             pass
         try:
-            sparse_results = keyword_search.query(query, topk=20, paper_ids=paper_ids)
+            sparse_results = keyword_search.query(query, topk=_s.retrieval_topk_sparse, paper_ids=paper_ids)
         except Exception:
             pass
-        fused = rrf_fuse(dense_results, sparse_results, topk=10, keyword_index=keyword_search)
+        fused = rrf_fuse(dense_results, sparse_results, topk=len(dense_results) + len(sparse_results), keyword_index=keyword_search)
         return [{"id": d.id, "content": d.content, "metadata": d.metadata} for d in fused]
 
     async def _read_anchor(args: dict) -> dict:
@@ -203,7 +218,9 @@ def _build_tool_registry(
         if not anchor_id and not paper_id:
             return {"error": "需要 anchor_id 或 paper_id"}
         # 从向量库中按 metadata 过滤
-        results = vector_store.query([0.0] * 1536, topk=1, paper_ids=[paper_id] if paper_id else None)
+        from app.service_layer.config.settings import get_settings
+        _dim = get_settings().embedding_dimensions
+        results = vector_store.query([0.0] * _dim, topk=1, paper_ids=[paper_id] if paper_id else None)
         if results:
             return {"content": results[0].fields.get("content", ""), "metadata": results[0].fields}
         return {"error": "未找到"}

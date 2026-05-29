@@ -105,7 +105,7 @@ async def test_zh_pdf(tag, filename, zh_output):
     if str(_TEST_ROOT.parent) not in sys.path:
         sys.path.insert(0, str(_TEST_ROOT.parent))
 
-    from app.data_layer.preprocessing.transformation.mineru_client import MinerUClient
+    from app.data_layer.preprocessing.mineru_processing import MinerUClient
 
     pdf_path = _TEST_ROOT / "fixtures" / "pdfs_zh" / filename
     if not pdf_path.exists():
@@ -131,7 +131,7 @@ async def test_en_pdf(tag, filename, en_output):
     if str(_TEST_ROOT.parent) not in sys.path:
         sys.path.insert(0, str(_TEST_ROOT.parent))
 
-    from app.data_layer.preprocessing.transformation.mineru_client import MinerUClient
+    from app.data_layer.preprocessing.mineru_processing import MinerUClient
 
     pdf_path = _TEST_ROOT / "fixtures" / "pdfs_en" / filename
     if not pdf_path.exists():

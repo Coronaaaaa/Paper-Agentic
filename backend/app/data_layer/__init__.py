@@ -8,7 +8,7 @@
 
 # 预处理层
 from .preprocessing.transfer import PipelineOrchestrator, PipelineState, IngestResult
-from .preprocessing.transformation import convert_pdf, ConversionResult
+from .preprocessing.mineru_processing import convert_pdf, ConversionResult
 from .preprocessing.cleaning import clean_markdown, CleaningResult
 from .preprocessing.vlm_understanding import VLMProcessor, VLMResult
 from .preprocessing.chunking import semantic_chunk, Chunk, Anchor
@@ -19,7 +19,6 @@ from .indexing.embedding import EmbeddingClient
 from .indexing.chroma_store import VectorIndex, KeywordIndex, SoftDeleteManager
 
 # 存储层
-from .storage.config import DataLayerConfig, load_config
 from .storage.file_management import DirectoryManager
 from .storage.monitor import StorageMonitor
 
@@ -51,8 +50,6 @@ __all__ = [
     "SoftDeleteManager",
 
     # 存储层
-    "DataLayerConfig",
-    "load_config",
     "DirectoryManager",
     "StorageMonitor",
 

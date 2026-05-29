@@ -3,7 +3,7 @@
 ## 目录结构
 
 ```
-test_backend/
+tests/
 ├── conftest.py              # 根配置（sys.path）
 ├── .gitignore               # 排除 data/ fixtures/ _artifacts/ __pycache__/
 │
@@ -32,7 +32,7 @@ test_backend/
 │   │   ├── probe/           # 探针测试
 │   │   ├── retrieval/       # 检索测试
 │   │   ├── transfer/        # 路由调度测试
-│   │   ├── transformation/  # 转换测试
+│   │   ├── mineru_processing/ # MinerU 解析测试
 │   │   └── vlm_understanding/ # VLM 测试
 │   └── integration/         # 集成测试（需真实 API / 文件）
 │
@@ -64,16 +64,16 @@ test_backend/
 cd backend
 
 # 运行所有单元测试
-uv run pytest test_backend/agent_layer/unit test_backend/data_layer/unit test_backend/service_layer/unit -v
+uv run pytest tests/agent_layer/unit tests/data_layer/unit tests/service_layer/unit -v
 
 # 运行所有集成测试
-uv run pytest test_backend/data_layer/integration -v -s
+uv run pytest tests/data_layer/integration -v -s
 
 # 运行特定模块
-uv run pytest test_backend/data_layer/unit/cleaning/ -v
+uv run pytest tests/data_layer/unit/cleaning/ -v
 
 # 运行全部（不含 soak/e2e）
-uv run pytest test_backend/agent_layer/unit test_backend/data_layer test_backend/service_layer -v
+uv run pytest tests/agent_layer/unit tests/data_layer tests/service_layer -v
 ```
 
 ## 添加新测试

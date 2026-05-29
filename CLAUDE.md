@@ -51,12 +51,13 @@
 
 ### 后端
 - **框架**: FastAPI (Python 3.13)
-- **LLM/VLM**: provider-neutral（通过环境变量配置，不硬编码供应商）
+- **LLM/VLM**: provider-neutral（通过 `BackendSettings` 统一配置，不硬编码）
 - **向量库**: ChromaDB（纯 Python，SQLite 持久化）
 - **关键词检索**: BM25 + jieba
-- **Embedding**: 可配置（默认通过 .env 指定 API 地址和模型）
-- **PDF 解析**: MinerU 精准解析 API（PP-DocLayoutV2 + SLANet+），支持 PDF/DOCX/DOC/PPTX/XLSX
+- **Embedding**: 可配置（通过 `BackendSettings` 注入）
+- **PDF 解析**: MinerU 精准解析 API（唯一处理器，不引入替代方案）
 - **缓存**: 进程内内存（无外部缓存依赖）
+- **配置管理**: 全部通过 `BackendSettings`（pydantic-settings），支持 `.env` 和 `/config/env` API 热更新
 
 ### 前端
 - **框架**: Vue 3 + TypeScript
@@ -71,211 +72,329 @@
 论文助手/
 ├── backend/                  # FastAPI 后端
 │   ├── app/
-│   │   ├── data_layer/       # 数据层（预处理 / 索引 / 检索 / 存储）
-│   │   ├── agent_layer/      # Agent 层（编排 / 规划 / 回答 / 会话）
-│   │   └── service_layer/    # 服务层（API / SSE / 配置 / 启动）
-│   ├── tests/                # 按 layer 组织（agent_layer/unit, data_layer/unit, ...）
-│   ├── data/                 # 运行态数据（chroma_db, bm25_index, papers, parsed, app.db）
+│   │   ├── data_layer/       # 数据层
+│   │   │   ├── preprocessing/
+│   │   │   │   ├── mineru_processing/  # MinerU PDF 解析（唯一处理器）
+│   │   │   │   │   ├── mineru_client.py    # 编排器：重试 + Key 轮转 + 进度
+│   │   │   │   │   ├── api_client.py       # 原始 HTTP 调用
+│   │   │   │   │   ├── pdf_splitter.py     # PDF 拆分工具
+│   │   │   │   │   ├── pdf_converter.py    # 转换入口（pipeline 调用这里）
+│   │   │   │   │   ├── key_pool.py         # API Key 池（当前单 Key 直通）
+│   │   │   │   │   └── result_types.py     # 数据类
+│   │   │   │   ├── chunking/               # 语义切分
+│   │   │   │   ├── cleaning/               # Markdown 清洗
+│   │   │   │   ├── vlm_understanding/      # VLM 图片理解
+│   │   │   │   ├── transfer/               # Pipeline 编排
+│   │   │   │   └── monitor/                # Pipeline 监控
+│   │   │   ├── indexing/                   # 索引（ChromaDB + BM25）
+│   │   │   ├── retrieval/                  # 检索（Dense + Sparse + RRF 融合）
+│   │   │   └── storage/                    # 存储（SQLite + 文件管理）
+│   │   ├── agent_layer/      # Agent 层
+│   │   │   ├── orchestration/              # 编排（turn_runner + tool_loop）
+│   │   │   ├── planning/                   # 规划（input_assembler + snapshot_builder）
+│   │   │   ├── response/                   # 回答（block_streamer + citation_resolver）
+│   │   │   ├── runtime/                    # 运行时（chat_model + token_budget）
+│   │   │   ├── session/                    # 会话（window_store + persistence）
+│   │   │   ├── hooks/                      # 钩子（compact + reflection）
+│   │   │   └── contracts/                  # 数据契约
+│   │   └── service_layer/    # 服务层
+│   │       ├── api/                        # API 路由
+│   │       ├── bootstrap/                  # 启动（container + import_monitor）
+│   │       ├── config/                     # 配置（BackendSettings）
+│   │       ├── schemas/                    # Pydantic schemas
+│   │       └── sse/                        # SSE 编码
+│   ├── tests/                # 按 layer 组织
+│   ├── data/                 # 运行态数据
 │   ├── main.py               # 入口
 │   └── pyproject.toml
 ├── frontend/                 # Vue 3 + TypeScript + WPS 插件壳
-│   ├── src/
-│   └── vite.config.ts
 ├── docs/                     # 文档与决策记录
-│   └── backend/              #   活动文档（architecture.md + 三层子文档 + 待办）
 ├── datasets/                 # 测试样本（不入版本控制）
 ├── log/                      # 运行日志（不入版本控制）
 └── archives/                 # 历史版本归档
 ```
 
-详细目录树见 [README.md](README.md)。
+---
+
+## 数据流架构
+
+### 文档导入流程
+
+```
+前端上传 PDF
+    │
+    ▼
+import_routes.py: start_import()
+    │  文件保存 + SHA-256 去重
+    │  创建 ImportTask (SQLite)
+    ▼
+ImportMonitor.on_pipeline_event()  ←── 统一调度层
+    │  ├── SSE bus → 用户实时进度
+    │  ├── PipelineMonitor → 开发者指标
+    │  └── get_artifacts() → 中间产物查询
+    │
+    ▼
+PipelineOrchestrator.ingest_document()
+    │
+    ├─→ PipelineOrchestrator.run()
+    │       │
+    │       ├─→ [阶段1] MinerU 精准解析
+    │       │     mineru_client.py (编排器)
+    │       │       ├── key_pool.acquire() → 获取 API Key
+    │       │       ├── api_client.request_upload_url() → POST /file-urls/batch
+    │       │       ├── api_client.upload_file() → PUT 上传
+    │       │       ├── api_client.poll_batch() → 轮询结果
+    │       │       └── api_client.download_and_extract() → 下载 ZIP
+    │       │     超限 PDF 自动切分 (pdf_splitter.py)
+    │       │     失败重试：指数退避 + jitter（不换工具）
+    │       │
+    │       ├─→ [阶段2] VLM 图片理解（与清洗并行）
+    │       │     vlm_understanding/vlm_processor.py
+    │       │
+    │       ├─→ [阶段3] Markdown 清洗
+    │       │     cleaning/markdown_cleaner.py
+    │       │
+    │       ├─→ [阶段4] 语义切分
+    │       │     chunking/semantic_chunker.py
+    │       │     基于嵌入向量的语义边界检测
+    │       │
+    │       ├─→ [阶段5] Embedding 向量化
+    │       │     embedding/embedding_client.py
+    │       │     并发控制：Semaphore(max_concurrency)
+    │       │
+    │       └─→ [阶段6] 索引写入
+    │             ChromaDB (向量) + BM25 (关键词)
+    │
+    └─→ 产物持久化
+          ├── markdown.json (清洗后文本 + 元数据)
+          ├── structured.json (chunks + anchors)
+          └── extraction_report.json (pipeline 报告)
+```
+
+### RAG 问答流程
+
+```
+用户提问 (prompt + selection + written_context)
+    │
+    ▼
+turn_runner.py: run()
+    │
+    ├─→ [1] 冻结快照 (snapshot_builder.py)
+    │     三源输入加权：prompt/selection/written_context
+    │     权重从 BackendSettings 读取（可配置）
+    │
+    ├─→ [2] 历史压缩判断 (compact.py)
+    │     剩余空间 < 5% → 触发压缩
+    │     LLM 总结 → 失败降级（保留最近 N 条，不丢失上下文）
+    │     压缩结果通过 MetadataEvent.degraded_flags 通知前端
+    │
+    ├─→ [3] 检索决策 (retrieval_gate.py)
+    │     判断是否需要 RAG 检索
+    │
+    ├─→ [4] 混合检索 (如果需要)
+    │     │
+    │     ├─→ Dense 检索 (vector_retriever.py)
+    │     │     ChromaDB 向量相似度查询
+    │     │     topk 从 settings 读取（默认 20）
+    │     │
+    │     ├─→ Sparse 检索 (keyword_retriever.py)
+    │     │     BM25 关键词查询
+    │     │     topk 从 settings 读取（默认 20）
+    │     │
+    │     └─→ RRF 融合 (rrf_fusion.py)
+    │           Dense + Sparse 结果融合
+    │           rrf_k 从 settings 读取（默认 60）
+    │           返回全部候选（不预截断）
+    │
+    ├─→ [5] 上下文构建 (_build_context)
+    │     TokenBudget 根据模型上下文动态裁剪
+    │     context_window - max_output - system_prompt = 可用空间
+    │     逐个 chunk 塞入，塞不下就停
+    │
+    ├─→ [6] Reflection 自检 (reflection.py)
+    │     最多 N 轮（settings.reflection_max_rounds）
+    │     证据不足 → 扩大检索范围
+    │     方向偏离 → 切换查询（最多 M 次）
+    │
+    ├─→ [7] LLM 流式生成
+    │     chat_model.chat_stream()
+    │     支持模型轮转（429 自动切换 fallback）
+    │     每个 chunk 推送 DeltaEvent 给前端
+    │
+    ├─→ [8] 引用解析 + 源码映射
+    │     citation_resolver.py → 识别 [1][2] 引用
+    │     source_mapper.py → 生成 SourceCard
+    │
+    ├─→ [9] 结构化输出 (block_streamer.py)
+    │     Markdown → ContentBlock 序列
+    │     paragraph / heading / list / table / code / citation
+    │
+    └─→ [10] SSE 返回
+          MetadataEvent → ThinkingEvent → BlockEvent(s) → SourcesEvent → DoneEvent
+```
+
+### 导入监控数据流
+
+```
+PipelineOrchestrator._emit()
+    │
+    ▼
+ImportMonitor.on_pipeline_event()  ←── 统一入口
+    │
+    ├──→ ImportProgressBus.publish() → SSE 推前端
+    │     { status, step, percent, stage_name, message }
+    │
+    ├──→ PipelineMonitor.start_stage / complete_stage
+    │     阶段耗时、成功率指标
+    │
+    └──→ StorageMonitor.record_latency
+          embedding 延迟、存储健康
+```
 
 ---
 
-## 开发规则
-
-### 0. Git 提交规则（硬规则）
-
-**禁止主动 commit**：除非用户明确说"提交"/"commit"，否则不创建任何 commit。
-
-**提交格式**：用户发起 commit 时会附带自己的描述。commit message 结构如下：
-
-```
-<类型>: <简短标题>
-
-<基于代码 diff 的事实摘要：改了哪些文件、改了什么，只记录事实，不记录推断>
-
----
-
-"用户原话，一字不改"
-```
-
-**事实摘要规范**：
-- 只记录从 `git diff` 中能直接读到的事实：哪些文件变了、函数签名改了、参数增删了、逻辑分支变了
-- 禁止主观判断：不说"优化了"、"改进了"、"更好地"，只说"将 X 改为 Y"、"删除了 Z"
-- 不推断动机：不说"为了支持 XXX"、"为了更好地 YYY"
-- 用户的 message 是唯一允许的主观内容，必须原话保留，用 `---` 分隔后加双引号包裹
-- 如果用户追问改动细节或技术问题，如实基于代码回答即可
-
-### 1. 数据流架构（重要）
-
-**文档导入流程**：
-```
-本地 PDF/DOCX → MinerU 精准解析 → Markdown + JSON + images → 清洗 → VLM 图片语义（并行）→ 语义切分 → Embedding → Chroma + BM25
-```
-
-**RAG 问答流程**：
-```
-用户提问 → 三源加权冻结（prompt/selection/written_context）→ 检索决策 → Dense + BM25 + RRF 融合 → LLM 流式生成 → 引用标注 → SSE 返回
-```
-
-### 2. 后端三层架构
+## 后端三层架构
 
 后端分三层，每层职责明确、互不穿透：
 
 | 层 | 核心职责 | 不负责什么 |
 |---|---|---|
-| **data_layer** | 文档预处理、清洗、结构化、向量化、混合检索、原文锚点 | 不负责对话编排，不直接暴露 HTTP |
-| **agent_layer** | 会话、缓存、输入加权、检索决策、reflection、回答生成、compact | 不直接处理底层文件解析，不直接承载 API 协议 |
-| **service_layer** | API、SSE、配置、启动、健康检查、日志、依赖装配 | 不承载业务推理，不直接写检索和总结策略 |
-
----
-
-## 常用命令
-
-### 后端
-
-```bash
-cd backend
-
-# 安装依赖
-uv sync
-
-# 启动服务
-uv run python main.py
-
-# 或直接用 uvicorn
-uv run uvicorn app.main:app --reload
-
-# 单元测试（按层运行）
-uv run pytest tests/agent_layer/unit tests/data_layer/unit tests/service_layer/unit -v
-
-# 集成测试（需真实 API key）
-uv run pytest tests/data_layer/integration -v -s
-
-# 全部测试
-uv run pytest tests/ -v
-```
-
-### 测试目录规范
-
-```
-backend/test_backend/    # 后端测试（单元/集成/e2e/soak）
-frontend/test_frontend/  # 前端测试（组件/store/service）
-tests/                   # 前后端联调测试（E2E / API 契约）
-```
-
-详细规范见 `backend/test_backend/README.md`。
-
-### 前端
-
-```bash
-cd frontend
-
-# 安装依赖
-pnpm install
-
-# 开发模式
-pnpm dev
-
-# 构建
-pnpm build
-```
+| **data_layer** | 文档预处理、MinerU 解析、清洗、切分、向量化、混合检索、原文锚点 | 不负责对话编排，不直接暴露 HTTP |
+| **agent_layer** | 会话、输入加权、检索决策、reflection、回答生成、compact | 不直接处理底层文件解析，不直接承载 API 协议 |
+| **service_layer** | API、SSE、配置、启动、健康检查、日志、依赖装配、导入监控 | 不承载业务推理，不直接写检索和总结策略 |
 
 ---
 
 ## 配置管理
 
-所有配置通过 `.env` 文件管理（参见 `backend/.env.example`）：
+**所有配置统一通过 `BackendSettings`（pydantic-settings）管理**，不硬编码。
+
+配置来源（优先级从高到低）：
+1. 环境变量
+2. `.env` 文件
+3. `BackendSettings` 默认值
+
+配置更新方式：
+- 修改 `.env` 文件 → 重启后端
+- `POST /api/v1/config/env` → 写入 `.env` → 返回 `restart_required: true`
+
+### 核心配置项
 
 ```env
-# LLM 服务（provider-neutral）
-LLM_API_KEY=your_key
-LLM_BASE_URL=https://api.example.com/v1
-LLM_MODEL=model-name
+# ── LLM ──
+LLM_API_KEY=
+LLM_BASE_URL=
+LLM_MODEL=
+LLM_MAX_TOKENS=4096
+LLM_CONTEXT_WINDOW=0          # 0 = 从 API 自动发现
 
-# Embedding 服务
-EMBEDDING_API_KEY=your_key
-EMBEDDING_BASE_URL=https://api.example.com/v1
-EMBEDDING_MODEL=model-name
+# ── Embedding ──
+EMBEDDING_API_KEY=
+EMBEDDING_BASE_URL=
+EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
 EMBEDDING_DIMENSIONS=1536
+EMBEDDING_CONTEXT_WINDOW=0    # 0 = 用 chunk_max_context
 
-# MinerU PDF 解析
-MINERU_API_KEY=your_key
+# ── MinerU ──
+MINERU_API_KEY=               # 多 Key 用逗号分隔（预留）
+MINERU_BASE_URL=https://mineru.net/api/v4
+MINERU_POLL_INTERVAL=5
+MINERU_TIMEOUT=300
+MINERU_MAX_RETRIES=3
+MINERU_MAX_PAGES_PER_CHUNK=180
+MINERU_MAX_PER_KEY=2
 
-# VLM 图片理解
-VLM_API_KEY=your_key
-VLM_BASE_URL=https://api.example.com/v1
-VLM_MODEL=model-name
+# ── VLM ──
+VLM_API_KEY=
+VLM_BASE_URL=
+VLM_MODEL=
+VLM_MAX_TOKENS=1024
+VLM_MAX_RETRIES=3
 
-# 反思模型（可选，不配则用主模型）
-REFLECTION_API_KEY=your_key
-REFLECTION_MODEL=model-name
+# ── 检索 ──
+RETRIEVAL_TOPK_DENSE=20
+RETRIEVAL_TOPK_SPARSE=20
+RETRIEVAL_MAX_DISTANCE=2.0
+RETRIEVAL_RRF_K=60
+
+# ── 切分 ──
+CHUNK_MAX_CONTEXT=32000
+CHUNK_TARGET_SIZE=24000
+CHUNK_OVERLAP_BUFFER=8000
+CHUNK_MIN_TOKENS=128
+CHUNK_MAX_TOKENS=512
+CHUNK_OVERLAP_RATIO=0.10
+CHUNK_SIMILARITY_THRESHOLD=0.3
+CHUNK_EMBEDDING_WINDOW=3
+
+# ── 会话 ──
+CONTEXT_WINDOW_TOKENS=32000
+MAX_OUTPUT_TOKENS=4096
+COMPACT_MAX_SUMMARY_TOKENS=500
+COMPACT_FALLBACK_KEEP_RECENT=6
+COMPACT_TRIGGER_RATIO=0.05
+
+# ── Reflection ──
+REFLECTION_MAX_ROUNDS=3
+REFLECTION_MAX_DIRECTION_SWITCHES=2
+
+# ── 其他 ──
+SOFT_DELETE_RETENTION_DAYS=7
+AVG_MESSAGE_TOKENS=500
+SYSTEM_PROMPT_TOKENS=2000
+SOURCE_SNIPPET_MAX_LENGTH=220
+TITLE_MAX_LENGTH=20
 ```
 
 **配置约束**：
-- 所有供应商信息通过环境变量注入，不在代码中硬编码
+- 所有供应商信息通过 `BackendSettings` 注入，不在代码中硬编码
 - 更换 Embedding 模型会导致向量库失效，需要重建索引
-- 运行态缓存默认使用进程内内存，无需外部服务
+- 运行态缓存使用进程内内存，无需外部服务
 
 ---
 
-## 🔮 未来扩展标注规范
+## 检索动态计算
 
-所有未来扩展点在代码中用 `🔮 未来扩展` 标记：
+**检索 topk 不是固定值**，而是根据模型上下文动态计算：
 
-```python
-async def retrieve(
-    query: str,
-    resource_types: list[str] | None = None,  # 🔮 未来扩展：用户自选数据类型
-    selected_papers: list[str] | None = None,  # 🔮 未来扩展：用户自选文献
-) -> dict[str, Any]:
-    """
-    ═════════════════════════════════════════════════════════════════════
-    🔮 未来扩展：Collection 过滤逻辑
-    ═════════════════════════════════════════════════════════════════════
+```
+模型上下文窗口 (context_window_tokens)
+  - 最大输出 (max_output_tokens)
+  - 系统提示 (system_prompt_tokens)
+  = 可用空间
 
-    # 实现代码写在这里
-
-    产品价值：
-    - 提高准确性：用户知道答案在哪些文献里
-    - 增强掌控感：用户主动选择
-    - 减少干扰：排除不相关文献
-    """
+可用空间 / 平均 chunk 大小 = 实际能放入的 chunk 数
 ```
 
-**快速定位所有扩展点**：
-```bash
-grep -r "🔮 未来扩展" app/
-```
+流程：
+1. Dense + Sparse 各取 20 个候选（`retrieval_topk_dense/sparse`）
+2. RRF 融合全部候选（不预截断）
+3. `TokenBudget` 根据可用空间逐个塞入，塞不下就停
+
+`TokenBudget` 在 `token_budget.py` 中实现，读取 `context_window_tokens` 和 `max_output_tokens`。
 
 ---
 
 ## 已知问题与限制
 
 ### 已修复
-- [x] PDF 解析：从本地 PyMuPDF 改为 MinerU API
+- [x] PDF 解析：从本地 PyMuPDF 改为 MinerU API（唯一处理器）
 - [x] 向量库：从 zvec（RocksDB）改为 ChromaDB（SQLite），根治 Windows 锁问题
 - [x] Redis 依赖：移除 Redis，运行态缓存改为进程内内存
 - [x] 切分策略：实现基于嵌入向量的语义切分（非固定 token 切分）
-- [x] 探针/路由：删除 probe/ 和 routing（MinerU 直接处理所有格式）
 - [x] 架构重构：从混合态迁移到三层结构（data_layer / agent_layer / service_layer）
-- [x] SSE 协议：切换到 thinking/block/sources/done/error
-- [x] ContentBlock：实现结构化回答块（paragraph/heading/list/table/code/divider/citation）
-- [x] 输入加权：三种输入源冻结 + 四种起手权重
-- [x] RRF 融合：Dense + BM25 融合检索
+- [x] SSE 协议：thinking/block/sources/done/error + StatusEvent + DeltaEvent
+- [x] ContentBlock：结构化回答块（paragraph/heading/list/table/code/citation）
+- [x] 输入加权：三种输入源冻结 + 权重可配置
+- [x] RRF 融合：Dense + BM25 动态融合，topk 由 TokenBudget 裁剪
+- [x] 配置统一：所有硬编码值迁移到 BackendSettings，支持 .env 和 API 配置
+- [x] MinerU 重构：拆分为 mineru_processing/ 模块，支持多 Key 池（预留）
+- [x] 导入监控：ImportMonitor 统一调度层（SSE + PipelineMonitor + StorageMonitor）
+- [x] 压缩降级：compact 失败不丢失上下文，降级保留最近消息
+- [x] 配置热更新 API：GET/POST /config/env
 
 ### 待完成
+- [ ] MinerU 多 Key 轮转（等 3+ Key 时实现 key_pool.py）
 - [ ] 用户自选文献功能（接口已预留）
 - [ ] 多模态资源支持（视频、文档、笔记）
 - [ ] 知识图谱集成

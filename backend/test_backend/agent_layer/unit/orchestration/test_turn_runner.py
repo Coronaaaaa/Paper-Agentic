@@ -389,9 +389,11 @@ async def test_compact_summary_is_persisted_and_reused(runner, mock_chat_model, 
     mock_block_streamer.return_value = []
     runner._freeze_snapshot = AsyncMock(return_value=snapshot)
 
+    from app.agent_layer.hooks.compact import CompactResult
+
     with patch("app.agent_layer.orchestration.turn_runner.estimate_tokens", return_value=29999), patch(
         "app.agent_layer.orchestration.turn_runner.compact_conversation",
-        new=AsyncMock(return_value="压缩摘要"),
+        new=AsyncMock(return_value=CompactResult(summary="压缩摘要", original_count=2)),
     ):
         frames = await _collect(runner, _FakeRequest(session_id="s1", prompt="长问题"))
 

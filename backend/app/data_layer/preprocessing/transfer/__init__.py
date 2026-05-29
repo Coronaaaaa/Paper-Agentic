@@ -10,6 +10,7 @@ from .pipeline import (
     PipelineOrchestrator,
     PipelineStage,
     PipelineState,
+    StageResults,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "PipelineStage",
     "PipelineEvent",
     "IngestResult",
+    "StageResults",
 ]

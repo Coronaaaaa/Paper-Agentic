@@ -12,10 +12,10 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 # 样本目录
-_FIXTURES_DIR = BACKEND_ROOT / "tests" / "fixtures"
+_FIXTURES_DIR = BACKEND_ROOT / "test_backend" / "fixtures"
 ZH_PDF_DIR = _FIXTURES_DIR / "pdfs_zh"
 EN_PDF_DIR = _FIXTURES_DIR / "pdfs_en"
-OUTPUT_DIR = BACKEND_ROOT / "tests" / "data"
+OUTPUT_DIR = BACKEND_ROOT / "test_backend" / "data"
 
 
 def _find_first_pdf(directory: Path) -> Path | None:

@@ -23,7 +23,7 @@ MINERU_AGENT_BASE = "https://mineru.net/api/v1/agent"
 MINERU_V4_BASE = "https://mineru.net/api/v4"
 MINERU_TOKEN = os.environ.get("MINERU_TOKEN", "")
 
-_TEST_ROOT = Path(__file__).resolve().parents[2]  # backend/test_backend
+_TEST_ROOT = Path(__file__).resolve().parents[2]  # backend/tests
 PDF_DIR = _TEST_ROOT / "fixtures" / "pdfs_zh"
 MARKDOWN_DIR = _TEST_ROOT / "_legacy" / "data_UnitTest"
 OUTPUT_DIR = _TEST_ROOT / "output" / "mineru_comparison"

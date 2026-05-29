@@ -94,9 +94,29 @@ async def stream_import_progress(task_id: str, request: Request):
     )
 
 
+@router.get("/import/artifacts/{task_id}")
+async def get_import_artifacts(task_id: str, request: Request):
+    """查询导入中间产物（markdown/structured/report）"""
+    container = request.app.state.container
+    monitor = container.import_monitor
+
+    progress = monitor.get_progress(task_id)
+    artifacts = monitor.get_artifacts(task_id, container.directory_manager)
+
+    if progress is None and artifacts is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在或已过期")
+
+    return {
+        "task_id": task_id,
+        "progress": progress,
+        "artifacts": artifacts,
+    }
+
+
 async def _run_import_with_progress(container, task_id: str, file_path: Path):
     """后台导入 worker（带进度推送）"""
     bus = container.import_progress_bus
+    monitor = container.import_monitor
 
     async def publish(event: dict):
         await bus.publish(task_id, event)
@@ -107,16 +127,8 @@ async def _run_import_with_progress(container, task_id: str, file_path: Path):
 
         from app.data_layer.preprocessing.transfer.pipeline import PipelineOrchestrator
 
-        loop = asyncio.get_event_loop()
-
-        def on_stage(pipeline_event):
-            asyncio.run_coroutine_threadsafe(
-                publish({"status": "running", "step": pipeline_event.stage.value, "paper_id": None}),
-                loop,
-            )
-
         orchestrator = PipelineOrchestrator(
-            monitor_callback=on_stage,
+            monitor_callback=monitor.on_pipeline_event,
             embedding_client=container.embedding_client,
             vector_index=container.vector_store,
             keyword_index=container.keyword_search,

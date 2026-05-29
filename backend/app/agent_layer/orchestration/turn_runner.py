@@ -164,13 +164,16 @@ class TurnRunner:
             # 注意：FrozenTurnSnapshot 是 Pydantic BaseModel，默认 frozen=False 允许属性赋值。
             # 若后续改为 frozen=True，此处需要用 model_copy(update=...) 替代直接赋值。
             if remaining_ratio < 0.05 and snapshot.recent_window:
-                summary = await compact_conversation(
-                    self._chat_model, snapshot.recent_window
+                compact_result = await compact_conversation(
+                    self._chat_model, snapshot.recent_window,
+                    max_context_tokens=max_context,
                 )
-                if summary:
-                    snapshot.history_summary = summary
+                if compact_result.summary:
+                    snapshot.history_summary = compact_result.summary
                     snapshot.recent_window = []
                     compacted = True
+                    if compact_result.degraded:
+                        degraded_flags.append(f"compact_degraded:{compact_result.degrade_reason}")
                     # 重新计算 token 用量
                     context_tokens = estimate_tokens(
                         (snapshot.prompt or "")
@@ -202,11 +205,13 @@ class TurnRunner:
             context = ""
 
             if need_rag:
-                max_reflection_rounds = 3
-                max_direction_switches = 2
+                from app.service_layer.config.settings import get_settings
+                _settings = get_settings()
+                max_reflection_rounds = _settings.reflection_max_rounds
+                max_direction_switches = _settings.reflection_max_direction_switches
                 direction_switches = 0
                 current_query = query_text
-                current_topk = 10  # 初始 topk
+                current_topk = 0  # 0 = 不限制，由 TokenBudget 动态裁剪
 
                 for round_num in range(1, max_reflection_rounds + 1):
                     retrieval_results = await self._retrieve(
@@ -337,28 +342,34 @@ class TurnRunner:
         return "\n\n".join(text for _, text in parts)
 
     async def _retrieve(
-        self, query_text: str, paper_ids: list[str] | None, topk: int = 10
+        self, query_text: str, paper_ids: list[str] | None, topk: int = 0
     ) -> list[dict]:
+        """检索：取候选 → RRF 融合 → 返回
+
+        topk=0 时融合不限数量，由 _build_context 的 TokenBudget 动态裁剪。
+        """
+        from app.service_layer.config.settings import get_settings
+        _s = get_settings()
         dense_results = []
         sparse_results = []
 
         if self._embedding_client is not None and self._vector_store is not None:
             try:
                 query_vector = await self._embedding_client.embed_single(query_text)
-                dense_results = self._vector_store.query(query_vector, topk=20, paper_ids=paper_ids)
+                dense_results = self._vector_store.query(query_vector, topk=_s.retrieval_topk_dense, paper_ids=paper_ids)
             except Exception as exc:
                 logger.warning("Dense retrieval failed: %s", exc)
 
         if self._keyword_search is not None:
             try:
-                sparse_results = self._keyword_search.query(query_text, topk=20, paper_ids=paper_ids)
+                sparse_results = self._keyword_search.query(query_text, topk=_s.retrieval_topk_sparse, paper_ids=paper_ids)
             except Exception as exc:
                 logger.warning("Keyword retrieval failed: %s", exc)
 
         if not dense_results and not sparse_results:
             return []
 
-        fused = rrf_fuse(dense_results, sparse_results, topk=topk, keyword_index=self._keyword_search)
+        fused = rrf_fuse(dense_results, sparse_results, topk=topk or len(dense_results) + len(sparse_results), keyword_index=self._keyword_search)
         return [
             {
                 "content": doc.content,

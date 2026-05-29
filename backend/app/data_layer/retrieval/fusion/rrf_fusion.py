@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-_RRF_K = 60  # RRF 融合常数
-
 
 @dataclass
 class FusedDoc:
@@ -21,7 +19,7 @@ class FusedDoc:
 def rrf_fuse(
     dense_results: list,
     sparse_results: list,
-    topk: int = 10,
+    topk: int = 0,
     keyword_index=None,
 ) -> list[FusedDoc]:
     """RRF 融合 Dense + Sparse 检索结果，返回融合后 topk 的 FusedDoc 列表
@@ -58,20 +56,22 @@ def rrf_fuse(
     all_doc_ids = set(dense_map.keys()) | set(sparse_map.keys())
 
     # 计算融合分数
+    from app.service_layer.config.settings import get_settings
+    rrf_k = get_settings().retrieval_rrf_k
     fused_scores: dict[str, float] = {}
     for doc_id in all_doc_ids:
         score = 0.0
         if doc_id in dense_map:
-            score += 1.0 / (_RRF_K + dense_map[doc_id][0])
+            score += 1.0 / (rrf_k + dense_map[doc_id][0])
         if doc_id in sparse_map:
-            score += 1.0 / (_RRF_K + sparse_map[doc_id][0])
+            score += 1.0 / (rrf_k + sparse_map[doc_id][0])
         fused_scores[doc_id] = score
 
     # 按融合分数排序
     sorted_ids = sorted(fused_scores, key=lambda x: fused_scores[x], reverse=True)
 
     results = []
-    for doc_id in sorted_ids[:topk]:
+    for doc_id in (sorted_ids if topk <= 0 else sorted_ids[:topk]):
         dense_rank = dense_map[doc_id][0] if doc_id in dense_map else 0
         sparse_rank = sparse_map[doc_id][0] if doc_id in sparse_map else 0
 

@@ -25,6 +25,19 @@ from app.service_layer.config.settings import BackendSettings
 
 
 @dataclass
+class _ReflectionConfig:
+    """Reflection 子模型配置，避免匿名类"""
+    llm_api_key: str
+    llm_base_url: str
+    llm_model: str
+    llm_max_tokens: int = 2048
+    llm_temperature: float = 0.3
+    llm_timeout: float = 60.0
+    llm_fallback_models: str = ""
+    chunk_max_context: int = 8000
+
+
+@dataclass
 class AppContainer:
     settings: BackendSettings
     conversation_window: ConversationWindowStore = field(init=False)
@@ -40,17 +53,15 @@ class AppContainer:
         self.keyword_search = KeywordIndex(str(self.settings.bm25_data_dir))
         self.chat_model = ChatModel(self.settings)
         if self.settings.reflection_configured:
-            class _ReflectionSettings:
-                llm_api_key = self.settings.reflection_api_key
-                llm_base_url = self.settings.reflection_base_url
-                llm_model = self.settings.reflection_model
-                llm_max_tokens = self.settings.max_output_tokens
-                llm_temperature = self.settings.reflection_temperature
-                llm_timeout = self.settings.reflection_timeout
-                llm_fallback_models = ""
-                chunk_max_context = self.settings.context_window_tokens
-
-            self.reflection_chat_model: ChatModel | None = ChatModel(_ReflectionSettings())
+            self.reflection_chat_model: ChatModel | None = ChatModel(_ReflectionConfig(
+                llm_api_key=self.settings.reflection_api_key,
+                llm_base_url=self.settings.reflection_base_url,
+                llm_model=self.settings.reflection_model,
+                llm_max_tokens=self.settings.max_output_tokens,
+                llm_temperature=self.settings.reflection_temperature,
+                llm_timeout=self.settings.reflection_timeout,
+                chunk_max_context=self.settings.context_window_tokens,
+            ))
         else:
             self.reflection_chat_model = None
         self.embedding_client = EmbeddingClient(
@@ -209,7 +220,7 @@ def _build_tool_registry(
             sparse_results = keyword_search.query(query, topk=_s.retrieval_topk_sparse, paper_ids=paper_ids)
         except Exception:
             pass
-        fused = rrf_fuse(dense_results, sparse_results, topk=len(dense_results) + len(sparse_results), keyword_index=keyword_search)
+        fused = rrf_fuse(dense_results, sparse_results, topk=len(dense_results) + len(sparse_results), keyword_index=keyword_search, rrf_k=_s.retrieval_rrf_k)
         return [{"id": d.id, "content": d.content, "metadata": d.metadata} for d in fused]
 
     async def _read_anchor(args: dict) -> dict:

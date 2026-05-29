@@ -7,7 +7,7 @@ import inspect
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Protocol
 
 from openai import APIConnectionError, APIStatusError, RateLimitError
 
@@ -37,6 +37,34 @@ from app.agent_layer.session.persistence import SessionPersistence
 from app.agent_layer.session.window_store import ConversationWindowStore
 
 logger = logging.getLogger("paper-assistant")
+
+
+class VectorStoreProtocol(Protocol):
+    def query(self, vector: list[float], topk: int, paper_ids: list[str] | None = None) -> list: ...
+
+
+class KeywordSearchProtocol(Protocol):
+    def query(self, query_text: str, topk: int, paper_ids: list[str] | None = None) -> list: ...
+
+
+class EmbeddingClientProtocol(Protocol):
+    async def embed_single(self, text: str) -> list[float]: ...
+
+
+class SnapshotBuilder(Protocol):
+    def __call__(self, request: Any, editor_context: Any, recent_window: list, history_summary: str) -> Any: ...
+
+
+class RetrievalGate(Protocol):
+    def __call__(self, snapshot: Any) -> bool: ...
+
+
+class SourceMapper(Protocol):
+    def __call__(self, retrieval_results: list[dict]) -> list: ...
+
+
+class BlockStreamer(Protocol):
+    def __call__(self, text: str, sources: list) -> list: ...
 
 
 def _user_friendly_error(exc: Exception) -> dict:
@@ -100,19 +128,19 @@ class TurnRunner:
     def __init__(
         self,
         chat_model: ChatModel,
-        snapshot_builder: Any,
-        retrieval_gate: Any,
-        source_mapper: Any,
-        block_streamer: Any,
+        snapshot_builder: SnapshotBuilder,
+        retrieval_gate: RetrievalGate,
+        source_mapper: SourceMapper,
+        block_streamer: BlockStreamer,
         window_store: ConversationWindowStore,
         editor_context_store: EditorContextStore,
         persistence: SessionPersistence,
-        vector_store: Any | None = None,
-        keyword_search: Any | None = None,
-        embedding_client: Any | None = None,
+        vector_store: VectorStoreProtocol | None = None,
+        keyword_search: KeywordSearchProtocol | None = None,
+        embedding_client: EmbeddingClientProtocol | None = None,
         tool_registry: ToolRegistry | None = None,
         cache_mode: str = "memory",
-        reflection_model: Any | None = None,
+        reflection_model: ChatModel | None = None,
     ) -> None:
         self._chat_model = chat_model
         self._reflection_model = reflection_model
@@ -369,7 +397,7 @@ class TurnRunner:
         if not dense_results and not sparse_results:
             return []
 
-        fused = rrf_fuse(dense_results, sparse_results, topk=topk or len(dense_results) + len(sparse_results), keyword_index=self._keyword_search, rrf_k=rrf_k)
+        fused = rrf_fuse(dense_results, sparse_results, topk=topk or len(dense_results) + len(sparse_results), keyword_index=self._keyword_search, rrf_k=_s.retrieval_rrf_k)
         return [
             {
                 "content": doc.content,

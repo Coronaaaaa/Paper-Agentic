@@ -62,8 +62,7 @@ async def get_selection(session_id: str, request: Request):
 async def start_polling(body: PollingStartRequest, request: Request):
     container = request.app.state.container
     async def _wps_poll_fn():
-        """占位 poll_fn — 实际应调用 WPS API 获取文档内容。
-        当前架构下前端主动 push，此端点保留给后端轮询模式。"""
+        # 废弃：当前走前端 push 模式，后端不直接对接 WPS
         return None
 
     container.editor_context_store.start_polling(

@@ -155,19 +155,17 @@ class TestRunnerContainerInjection:
 
         assert runner is real_runner
 
-    def test_runner_falls_back_to_container_memory_state(self):
+    def test_runner_uses_container_turn_runner(self):
         from app.service_layer.api.query_routes import _build_runner
 
         mock_request = MagicMock()
-        _, container = _build_app()
+        mock_runner = MagicMock()
+        _, container = _build_app(turn_runner=mock_runner)
         mock_request.app.state.container = container
 
         runner = _build_runner(mock_request)
 
-        assert runner._window_store is container.conversation_window
-        assert runner._editor_context_store is container.editor_context_store
-        assert runner._persistence is container.session_persistence
-        assert runner._cache_mode == "memory"
+        assert runner is mock_runner
 
     def test_runner_falls_back_when_container_missing(self):
         from app.service_layer.api.query_routes import _build_runner

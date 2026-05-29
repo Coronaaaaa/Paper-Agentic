@@ -24,11 +24,16 @@ router = APIRouter(tags=["import"])
 async def start_import(file: UploadFile = FastAPIFile(...), request: Request = None):
     container = request.app.state.container
 
-    # 保存上传文件
+    # 保存上传文件（UUID 前缀防同名覆盖 + 大小限制）
     uploads_dir = Path(container.settings.uploads_dir)
     uploads_dir.mkdir(parents=True, exist_ok=True)
-    dest = uploads_dir / (file.filename or "upload.pdf")
+    original_name = file.filename or "upload.pdf"
+    dest = uploads_dir / f"{uuid.uuid4().hex[:8]}_{original_name}"
+
+    MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB
     content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail=f"文件超过大小限制 ({MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
     dest.write_bytes(content)
 
     # 格式校验

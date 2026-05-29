@@ -1,37 +1,56 @@
 # 英文噪音发现测试数据
 
-## 来源
+## 扫描概况
 
-基于 `Dev_Tools/clean_md_tool` 黑板扫描工具，用合成英文 markdown 测试 LLM 噪音检测能力。
+| 指标 | 数值 |
+|------|------|
+| 英文 PDF 总数 | 111 |
+| MinerU 转换成功 | 105 |
+| 黑板扫描覆盖 | 106 文件（含合成测试文件） |
+| LLM 噪音发现 | 6473 条 |
+| 使用模型 | nv-minimax (minimaxai/minimax-m2.7) via NVIDIA NIM |
 
-## 测试模型
+## 噪音类型分布
 
-| 模型 | LLM 发现 | 启发式发现 | 说明 |
-|------|----------|-----------|------|
-| **nv-kimi** (moonshotai/kimi-k2.6) | 16 | 3 | 更全面，覆盖 5 种噪音类型 |
-| **nv-minimax** (minimaxai/minimax-m2.7) | 7 | 3 | 较保守，漏检英文 OCR 空格和部分元数据 |
-
-结论：**nv-kimi 更适合英文噪音检测**。
+| 噪音类型 | 数量 | 说明 |
+|----------|------|------|
+| table_noise | 2197 | HTML 表格标签、异常表格 |
+| image_or_caption_noise | 2178 | 图片引用、图注残留 |
+| ocr_spacing | 776 | OCR 异常空格（英文标题逐字母空格） |
+| pua_or_control | 616 | Unicode 私有区字符、控制字符 |
+| cover_metadata | 355 | 封面元数据（©、Article history、Keywords 等） |
+| suspect | 118 | 可疑但不确定的噪音 |
+| toc_residue | 76 | 目录残留 |
+| header_footer | 73 | 页眉页脚（Check for updates、doi 等） |
+| repeated_garbage | 43 | 超长重复乱码 |
+| watermark | 41 | 水印、版权标记 |
 
 ## 文件说明
 
 | 文件 | 说明 |
 |------|------|
-| `test_input.md` | 合成英文 markdown 测试输入，包含多种典型噪音 |
-| `kimi_findings.jsonl` | nv-kimi 扫描结果（22 条） |
-| `minimax_findings.jsonl` | nv-minimax 扫描结果（10 条） |
+| `test_input.md` | 合成英文 markdown 测试输入 |
+| `kimi_findings.jsonl` | nv-kimi 单文件测试结果（22 条） |
+| `minimax_findings.jsonl` | nv-minimax 单文件测试结果（10 条） |
+| `all_findings.jsonl` | 全量扫描结果（6473 条，106 文件） |
 
-## 噪音类型覆盖
+## 数据来源
 
-### kimi 检测到的噪音
+- **PDF**: `datasets/外文文献-测试-PDF/外文文献-测试/其他重要外文文献/`（111 篇英文论文）
+- **MinerU 转换**: `Dev_Tools/clean_md_tool/output_english_md/`（105 个 markdown）
+- **黑板扫描**: PostgreSQL `md_noise_blackboard` 数据库
+- **扫描脚本**: `Dev_Tools/clean_md_tool/scan_english_simple.py`
 
-| 噪音类型 | 数量 | 示例 |
-|----------|------|------|
-| cover_metadata | 4 | `A R T I C L E  I N F O`、`Article history`、`Keywords:`、`Corresponding author` |
-| watermark | 4 | `© 2023 Elsevier`、`Check for updates`、`Publisher's note`、`journal homepage` |
-| ocr_spacing | 6 | `A B S T R A C T`、`I n t r o d u c t i o n`、`L i t e r a t u r e  R e v i e w` |
-| table_noise | 1 | `<table>` HTML 标签 |
-| header_footer | 1 | `第 5 页 共 24 页` |
+## 模型测试对比
+
+| 模型 | 响应速度 | 发现数量 | 可用性 |
+|------|----------|----------|--------|
+| nv-kimi | ~1s/请求 | 16（单文件） | 间歇性超时 |
+| nv-minimax | ~1.5s/请求 | 7（单文件） | 稳定 |
+| nv-dsv4f | ~51s/请求 | - | 太慢 |
+| nv-stepfun | ~1s/请求 | - | 返回空内容 |
+
+结论：**nv-minimax 最稳定**，适合批量扫描。nv-kimi 更快但间歇性不可用。
 
 ## 对 markdown_cleaner.py 的扩展
 

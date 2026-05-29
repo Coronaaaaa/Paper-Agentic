@@ -137,7 +137,7 @@ def clean_markdown(markdown: str) -> CleaningResult:
 
 
 def clean_mineru_output(markdown: str, metadata: dict | None = None) -> CleaningResult:
-    """MinerU 输出的专用清洗（17 步流水线）
+    """MinerU 输出的专用清洗（21 步流水线）
 
     Args:
         markdown: MinerU 输出的 markdown
@@ -157,77 +157,97 @@ def clean_mineru_output(markdown: str, metadata: dict | None = None) -> Cleaning
     if html_table_removed > 0:
         logs.append(_log("info", f"清理 HTML 表格标签 {html_table_removed} 处"))
 
-    # 3. 移除期刊头（中点包裹的期刊名）
+    # 3. 移除期刊平台 UI 元素
+    markdown, journal_ui_removed = _remove_journal_ui(markdown)
+    if journal_ui_removed > 0:
+        logs.append(_log("info", f"移除期刊平台 UI {journal_ui_removed} 行"))
+
+    # 4. 移除版权声明 / 免责声明
+    markdown, watermark_removed = _remove_watermarks(markdown)
+    if watermark_removed > 0:
+        logs.append(_log("info", f"移除版权声明 {watermark_removed} 行"))
+
+    # 5. 移除期刊头（中点包裹的期刊名）
     markdown, journal_removed = _remove_journal_header(markdown)
     if journal_removed > 0:
         logs.append(_log("info", f"移除期刊头 {journal_removed} 行"))
 
-    # 4. 移除点状目录
+    # 6. 移除点状目录
     markdown, toc_removed = _remove_toc_section(markdown)
     if toc_removed > 0:
         logs.append(_log("info", f"移除点状目录 {toc_removed} 行"))
 
-    # 5. 移除无点状目录（政府文档等）
+    # 7. 移除无点状目录（政府文档等）
     markdown, toc2_removed = _remove_non_dot_leader_toc(markdown, metadata)
     if toc2_removed > 0:
         logs.append(_log("info", f"移除无点状目录 {toc2_removed} 行"))
 
-    # 6. 移除 CNKI 水印
+    # 8. 移除 CNKI 水印
     markdown, cnki_removed = _remove_cnki_watermark(markdown)
     if cnki_removed > 0:
         logs.append(_log("info", f"移除 CNKI 水印 {cnki_removed} 处"))
 
-    # 7. 移除作者简介块
+    # 9. 移除作者简介块
     markdown, bio_removed = _remove_author_bio(markdown)
     if bio_removed > 0:
         logs.append(_log("info", f"移除作者简介 {bio_removed} 处"))
 
-    # 8. 移除封面机构行
+    # 10. 移除封面机构行
     markdown, inst_removed = _remove_institution_lines(markdown)
     if inst_removed > 0:
         logs.append(_log("info", f"移除封面机构行 {inst_removed} 行"))
 
-    # 9. 移除页眉页脚
+    # 11. 移除页眉页脚
     markdown, footer_removed = _remove_page_footers(markdown)
     if footer_removed > 0:
         logs.append(_log("info", f"去除页眉页脚 {footer_removed} 处"))
 
-    # 10. 移除英文页眉页脚
+    # 12. 移除英文页眉页脚
     markdown, en_footer_removed = _remove_en_header_footer(markdown)
     if en_footer_removed > 0:
         logs.append(_log("info", f"移除英文页眉页脚 {en_footer_removed} 处"))
 
-    # 11. 移除 OCR 中文空格（连续 3+ CJK 字符间的空格）
+    # 13. 移除 OCR 中文空格（连续 3+ CJK 字符间的空格）
     markdown, ocr_fixed = _remove_ocr_spaces_in_chinese(markdown)
     if ocr_fixed > 0:
         logs.append(_log("info", f"修复 OCR 中文空格 {ocr_fixed} 处"))
 
-    # 12. 修复标题内空格
+    # 14. 修复标题内空格
     markdown, heading_fixed = _fix_heading_spaces(markdown)
     if heading_fixed > 0:
         logs.append(_log("info", f"修复标题内空格 {heading_fixed} 处"))
 
-    # 13. 修复英文标题逐字母空格
+    # 15. 修复英文标题逐字母空格
     markdown, en_heading_fixed = _fix_heading_spaces_english(markdown)
     if en_heading_fixed > 0:
         logs.append(_log("info", f"修复英文标题空格 {en_heading_fixed} 处"))
 
-    # 14. 空行压缩
+    # 16. 移除裸图片引用
+    markdown, bare_img_removed = _remove_bare_images(markdown)
+    if bare_img_removed > 0:
+        logs.append(_log("info", f"移除裸图片引用 {bare_img_removed} 处"))
+
+    # 17. 移除表格占位符
+    markdown, table_ph_removed = _remove_table_placeholders(markdown)
+    if table_ph_removed > 0:
+        logs.append(_log("info", f"移除表格占位符 {table_ph_removed} 处"))
+
+    # 18. 空行压缩
     markdown, empty_compressed = _compress_excessive_empty_lines(markdown)
     if empty_compressed > 0:
         logs.append(_log("info", f"压缩过多空行 {empty_compressed} 处"))
 
-    # 15. 标题层级标准化
+    # 19. 标题层级标准化
     markdown, headings_normalized = _normalize_headings(markdown)
     if headings_normalized > 0:
         logs.append(_log("info", f"标准化标题层级 {headings_normalized} 处"))
 
-    # 16. 修复 URL 中的空格
+    # 20. 修复 URL 中的空格
     markdown, url_fixed = _fix_url_spaces(markdown)
     if url_fixed > 0:
         logs.append(_log("info", f"修复 URL 空格 {url_fixed} 处"))
 
-    # 17. 行尾空格
+    # 21. 行尾空格
     markdown = _remove_trailing_spaces(markdown)
 
     elapsed = round(time.perf_counter() - t0, 3)
@@ -274,6 +294,8 @@ _COVER_META_PATTERNS = [
     re.compile(r"^A\s+B\s+S\s+T\s+R\s+A\s+C\s+T"),
     re.compile(r"^Corresponding author", re.IGNORECASE),
     re.compile(r"^E-mail\s*[:：]", re.IGNORECASE),
+    # 作者邮箱行（如 "Jun He hejun@njau.edu.cn"）
+    re.compile(r"^[A-Z][a-z]+ [A-Z][a-z]+\s+[\w.]+@[\w.]+\.\w+$"),
 ]
 
 # 期刊头模式（中点包裹的期刊名，仅匹配文档前部）
@@ -348,6 +370,11 @@ _EN_HEADER_FOOTER_PATTERNS = [
     re.compile(r"^journal homepage", re.IGNORECASE),
     re.compile(r"^doi\s*:\s*10\.", re.IGNORECASE),
     re.compile(r"^\d+\s*$"),
+    re.compile(r"^ORIGINAL\s+PAPER$", re.IGNORECASE),
+    re.compile(r"^Original\s+article$", re.IGNORECASE),
+    re.compile(r"^REVIEWED\s+BY$", re.IGNORECASE),
+    re.compile(r"^OPEN\s+ACCESS$", re.IGNORECASE),
+    re.compile(r"^Index\s+\d+\s*$", re.IGNORECASE),
 ]
 
 # HTML 表格标签
@@ -355,6 +382,33 @@ _HTML_TABLE_TAGS = re.compile(r"</?(?:table|tr|td|th|thead|tbody)\b[^>]*>", re.I
 
 # 英文标题逐字母空格（如 ## A B S T R A C T）
 _EN_HEADING_SPACE_RE = re.compile(r"^(#{1,6}\s+)([A-Za-z](?:\s+[A-Za-z]){2,})\s*$", re.MULTILINE)
+
+# 期刊平台 UI 元素（按钮、链接文本混入正文）
+_JOURNAL_UI_PATTERNS = [
+    re.compile(r"^Submit your article to this journal", re.IGNORECASE),
+    re.compile(r"^View (?:related )?articles", re.IGNORECASE),
+    re.compile(r"^View Crossmark data", re.IGNORECASE),
+    re.compile(r"^Article views?:\s*\d+", re.IGNORECASE),
+    re.compile(r"^Citing articles?:\s*\d+", re.IGNORECASE),
+    re.compile(r"^This page intentionally left blank", re.IGNORECASE),
+    re.compile(r"^This article was submitted to\b", re.IGNORECASE),
+]
+
+# 版权声明 / 免责声明
+_WATERMARK_PATTERNS = [
+    re.compile(r"^Copyright[:\s].*(?:Licensee|Publisher|Published by)", re.IGNORECASE),
+    re.compile(r"^©?\s*The Author\(s\)\s+\d{4}", re.IGNORECASE),
+    re.compile(r"^Disclaimer/Publisher", re.IGNORECASE),
+    re.compile(r"^\(c\)\s*\d{4}\s+.*(?:Published by|Licensee)", re.IGNORECASE),
+]
+
+# 裸图片引用（无 alt 文本、哈希命名文件）
+_BARE_IMAGE_RE = re.compile(
+    r"^!\[\]\(images?/[a-f0-9\-]+\.(?:jpg|jpeg|png|gif|bmp|webp)\)\s*$", re.IGNORECASE,
+)
+
+# 表格占位符
+_TABLE_PLACEHOLDER_RE = re.compile(r"^\[Insert\s+Table\s+\d+.*?\]$", re.IGNORECASE)
 
 
 def _remove_cover_metadata(text: str) -> tuple[str, int]:
@@ -501,6 +555,60 @@ def _fix_heading_spaces_english(text: str) -> tuple[str, int]:
         return prefix + spaced.replace(" ", "")
     cleaned, count = _EN_HEADING_SPACE_RE.subn(_fix, text)
     return cleaned, count
+
+
+def _remove_journal_ui(text: str) -> tuple[str, int]:
+    """移除期刊平台 UI 元素（Submit/View/Crossmark 等按钮文本）"""
+    lines = text.split("\n")
+    result = []
+    removed = 0
+    for line in lines:
+        stripped = line.strip()
+        if any(p.match(stripped) for p in _JOURNAL_UI_PATTERNS):
+            removed += 1
+            continue
+        result.append(line)
+    return "\n".join(result), removed
+
+
+def _remove_watermarks(text: str) -> tuple[str, int]:
+    """移除版权声明 / 免责声明"""
+    lines = text.split("\n")
+    result = []
+    removed = 0
+    for line in lines:
+        stripped = line.strip()
+        if any(p.match(stripped) for p in _WATERMARK_PATTERNS):
+            removed += 1
+            continue
+        result.append(line)
+    return "\n".join(result), removed
+
+
+def _remove_bare_images(text: str) -> tuple[str, int]:
+    """移除无 alt 文本的哈希命名图片引用"""
+    lines = text.split("\n")
+    result = []
+    removed = 0
+    for line in lines:
+        if _BARE_IMAGE_RE.match(line.strip()):
+            removed += 1
+            continue
+        result.append(line)
+    return "\n".join(result), removed
+
+
+def _remove_table_placeholders(text: str) -> tuple[str, int]:
+    """移除表格占位符（如 [Insert Table 1 about here]）"""
+    lines = text.split("\n")
+    result = []
+    removed = 0
+    for line in lines:
+        if _TABLE_PLACEHOLDER_RE.match(line.strip()):
+            removed += 1
+            continue
+        result.append(line)
+    return "\n".join(result), removed
 
 
 def _remove_journal_header(text: str) -> tuple[str, int]:

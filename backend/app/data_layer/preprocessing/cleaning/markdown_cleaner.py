@@ -137,7 +137,7 @@ def clean_markdown(markdown: str) -> CleaningResult:
 
 
 def clean_mineru_output(markdown: str, metadata: dict | None = None) -> CleaningResult:
-    """MinerU 输出的专用清洗（14 步流水线）
+    """MinerU 输出的专用清洗（17 步流水线）
 
     Args:
         markdown: MinerU 输出的 markdown
@@ -152,67 +152,82 @@ def clean_mineru_output(markdown: str, metadata: dict | None = None) -> Cleaning
     if cover_removed > 0:
         logs.append(_log("info", f"移除封面/学术元数据 {cover_removed} 行"))
 
-    # 2. 移除期刊头（中点包裹的期刊名）
+    # 2. 清理 HTML 表格标签
+    markdown, html_table_removed = _strip_html_table_tags(markdown)
+    if html_table_removed > 0:
+        logs.append(_log("info", f"清理 HTML 表格标签 {html_table_removed} 处"))
+
+    # 3. 移除期刊头（中点包裹的期刊名）
     markdown, journal_removed = _remove_journal_header(markdown)
     if journal_removed > 0:
         logs.append(_log("info", f"移除期刊头 {journal_removed} 行"))
 
-    # 3. 移除点状目录
+    # 4. 移除点状目录
     markdown, toc_removed = _remove_toc_section(markdown)
     if toc_removed > 0:
         logs.append(_log("info", f"移除点状目录 {toc_removed} 行"))
 
-    # 4. 移除无点状目录（政府文档等）
+    # 5. 移除无点状目录（政府文档等）
     markdown, toc2_removed = _remove_non_dot_leader_toc(markdown, metadata)
     if toc2_removed > 0:
         logs.append(_log("info", f"移除无点状目录 {toc2_removed} 行"))
 
-    # 5. 移除 CNKI 水印
+    # 6. 移除 CNKI 水印
     markdown, cnki_removed = _remove_cnki_watermark(markdown)
     if cnki_removed > 0:
         logs.append(_log("info", f"移除 CNKI 水印 {cnki_removed} 处"))
 
-    # 6. 移除作者简介块
+    # 7. 移除作者简介块
     markdown, bio_removed = _remove_author_bio(markdown)
     if bio_removed > 0:
         logs.append(_log("info", f"移除作者简介 {bio_removed} 处"))
 
-    # 7. 移除封面机构行
+    # 8. 移除封面机构行
     markdown, inst_removed = _remove_institution_lines(markdown)
     if inst_removed > 0:
         logs.append(_log("info", f"移除封面机构行 {inst_removed} 行"))
 
-    # 8. 移除页眉页脚
+    # 9. 移除页眉页脚
     markdown, footer_removed = _remove_page_footers(markdown)
     if footer_removed > 0:
         logs.append(_log("info", f"去除页眉页脚 {footer_removed} 处"))
 
-    # 9. 移除 OCR 中文空格（连续 3+ CJK 字符间的空格）
+    # 10. 移除英文页眉页脚
+    markdown, en_footer_removed = _remove_en_header_footer(markdown)
+    if en_footer_removed > 0:
+        logs.append(_log("info", f"移除英文页眉页脚 {en_footer_removed} 处"))
+
+    # 11. 移除 OCR 中文空格（连续 3+ CJK 字符间的空格）
     markdown, ocr_fixed = _remove_ocr_spaces_in_chinese(markdown)
     if ocr_fixed > 0:
         logs.append(_log("info", f"修复 OCR 中文空格 {ocr_fixed} 处"))
 
-    # 10. 修复标题内空格
+    # 12. 修复标题内空格
     markdown, heading_fixed = _fix_heading_spaces(markdown)
     if heading_fixed > 0:
         logs.append(_log("info", f"修复标题内空格 {heading_fixed} 处"))
 
-    # 11. 空行压缩
+    # 13. 修复英文标题逐字母空格
+    markdown, en_heading_fixed = _fix_heading_spaces_english(markdown)
+    if en_heading_fixed > 0:
+        logs.append(_log("info", f"修复英文标题空格 {en_heading_fixed} 处"))
+
+    # 14. 空行压缩
     markdown, empty_compressed = _compress_excessive_empty_lines(markdown)
     if empty_compressed > 0:
         logs.append(_log("info", f"压缩过多空行 {empty_compressed} 处"))
 
-    # 12. 标题层级标准化
+    # 15. 标题层级标准化
     markdown, headings_normalized = _normalize_headings(markdown)
     if headings_normalized > 0:
         logs.append(_log("info", f"标准化标题层级 {headings_normalized} 处"))
 
-    # 13. 修复 URL 中的空格
+    # 16. 修复 URL 中的空格
     markdown, url_fixed = _fix_url_spaces(markdown)
     if url_fixed > 0:
         logs.append(_log("info", f"修复 URL 空格 {url_fixed} 处"))
 
-    # 14. 行尾空格
+    # 17. 行尾空格
     markdown = _remove_trailing_spaces(markdown)
 
     elapsed = round(time.perf_counter() - t0, 3)
@@ -248,6 +263,17 @@ _COVER_META_PATTERNS = [
     re.compile(r"^文章编号[：:]\s*\S+"),
     re.compile(r"^ISSN[：:]\s*\S+"),
     re.compile(r"^收稿日期[：:]\s*\S+"),
+    # 英文学术元数据
+    re.compile(r"^©\s*\d{4}"),
+    re.compile(r"^Article history", re.IGNORECASE),
+    re.compile(r"^Received\s+\d{1,2}\s+\w+\s+\d{4}"),
+    re.compile(r"^Accepted\s+\d{1,2}\s+\w+\s+\d{4}"),
+    re.compile(r"^Available online", re.IGNORECASE),
+    re.compile(r"^Keywords?\s*[:：]", re.IGNORECASE),
+    re.compile(r"^A\s+R\s+T\s+I\s+C\s+L\s+E\s+I\s+N\s+F\s+O"),
+    re.compile(r"^A\s+B\s+S\s+T\s+R\s+A\s+C\s+T"),
+    re.compile(r"^Corresponding author", re.IGNORECASE),
+    re.compile(r"^E-mail\s*[:：]", re.IGNORECASE),
 ]
 
 # 期刊头模式（中点包裹的期刊名，仅匹配文档前部）
@@ -313,6 +339,22 @@ _AUTHOR_BIO_PATTERN = re.compile(r"作者简介[：:].*$", re.MULTILINE)
 
 # URL 空格修复
 _URL_SPACE_PATTERN = re.compile(r"(https?://\S*)\s+(\S+)")
+
+# 英文页眉页脚
+_EN_HEADER_FOOTER_PATTERNS = [
+    re.compile(r"^Check for updates$", re.IGNORECASE),
+    re.compile(r"^Publisher'?s?\s+note", re.IGNORECASE),
+    re.compile(r"^Contents lists? available", re.IGNORECASE),
+    re.compile(r"^journal homepage", re.IGNORECASE),
+    re.compile(r"^doi\s*:\s*10\.", re.IGNORECASE),
+    re.compile(r"^\d+\s*$"),
+]
+
+# HTML 表格标签
+_HTML_TABLE_TAGS = re.compile(r"</?(?:table|tr|td|th|thead|tbody)\b[^>]*>", re.IGNORECASE)
+
+# 英文标题逐字母空格（如 ## A B S T R A C T）
+_EN_HEADING_SPACE_RE = re.compile(r"^(#{1,6}\s+)([A-Za-z](?:\s+[A-Za-z]){2,})\s*$", re.MULTILINE)
 
 
 def _remove_cover_metadata(text: str) -> tuple[str, int]:
@@ -429,6 +471,36 @@ def _fix_url_spaces(text: str) -> tuple[str, int]:
             text = text.replace(original, fixed, 1)
             count += 1
     return text, count
+
+
+def _strip_html_table_tags(text: str) -> tuple[str, int]:
+    """移除 MinerU 输出中的 HTML 表格标签，保留文本内容"""
+    count = len(_HTML_TABLE_TAGS.findall(text))
+    cleaned = _HTML_TABLE_TAGS.sub("", text)
+    return cleaned, count
+
+
+def _remove_en_header_footer(text: str) -> tuple[str, int]:
+    """移除英文页眉页脚（Check for updates, Publisher's note 等）"""
+    lines = text.split("\n")
+    result = []
+    removed = 0
+    for line in lines:
+        stripped = line.strip()
+        if any(p.match(stripped) for p in _EN_HEADER_FOOTER_PATTERNS):
+            removed += 1
+            continue
+        result.append(line)
+    return "\n".join(result), removed
+
+
+def _fix_heading_spaces_english(text: str) -> tuple[str, int]:
+    """修复英文标题中的逐字母空格（如 ## A B S T R A C T → ## ABSTRACT）"""
+    def _fix(m: re.Match) -> str:
+        prefix, spaced = m.group(1), m.group(2)
+        return prefix + spaced.replace(" ", "")
+    cleaned, count = _EN_HEADING_SPACE_RE.subn(_fix, text)
+    return cleaned, count
 
 
 def _remove_journal_header(text: str) -> tuple[str, int]:

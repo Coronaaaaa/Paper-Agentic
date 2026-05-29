@@ -25,6 +25,7 @@ class ConversationSessionOut(BaseModel):
 
 
 class ConversationMessageOut(BaseModel):
+    id: int | None = None
     session_id: str
     role: str
     content: str
@@ -34,3 +35,7 @@ class ConversationMessageOut(BaseModel):
 
 class RenameRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=100, description="新标题")
+
+
+class EditMessageRequest(BaseModel):
+    content: str = Field(..., min_length=1, description="新内容")

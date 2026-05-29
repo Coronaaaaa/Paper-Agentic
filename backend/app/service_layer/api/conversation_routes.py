@@ -13,6 +13,7 @@ from app.service_layer.schemas.conversation import (
     ChatRequest,
     ConversationMessageOut,
     ConversationSessionOut,
+    EditMessageRequest,
     RenameRequest,
 )
 
@@ -87,6 +88,26 @@ async def list_messages(session_id: str, request: Request, limit: int = 50):
     container = request.app.state.container
     messages = container.conversation_repo.get_messages(session_id, limit=limit)
     return [ConversationMessageOut(**m.__dict__) for m in messages]
+
+
+@router.delete("/{session_id}/messages/{message_id}")
+async def delete_message(session_id: str, message_id: int, request: Request):
+    """删除单条消息"""
+    container = request.app.state.container
+    ok = container.conversation_repo.delete_message(message_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    return {"status": "ok", "message": "消息已删除"}
+
+
+@router.patch("/{session_id}/messages/{message_id}", response_model=ConversationMessageOut)
+async def edit_message(session_id: str, message_id: int, body: EditMessageRequest, request: Request):
+    """编辑消息内容"""
+    container = request.app.state.container
+    ok = container.conversation_repo.update_message(message_id, body.content)
+    if not ok:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    return ConversationMessageOut(id=message_id, session_id=session_id, role="", content=body.content)
 
 
 @router.post("/chat")

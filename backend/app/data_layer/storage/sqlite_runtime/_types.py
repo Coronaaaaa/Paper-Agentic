@@ -55,8 +55,9 @@ class ConversationSession:
 
 @dataclass
 class ConversationMessage:
-    session_id: str
-    role: str
-    content: str
+    id: int | None = None
+    session_id: str = ""
+    role: str = ""
+    content: str = ""
     created_at: str = ""
     sources_json: str | None = None

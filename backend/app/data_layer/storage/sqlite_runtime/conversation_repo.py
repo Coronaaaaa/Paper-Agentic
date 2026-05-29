@@ -167,7 +167,7 @@ class SQLiteConversationRepo:
             if session_id:
                 rows = conn.execute(
                     """
-                    SELECT session_id, role, content, created_at, sources_json
+                    SELECT id, session_id, role, content, created_at, sources_json
                     FROM conversation_messages
                     WHERE content LIKE ? AND session_id = ?
                     ORDER BY id DESC
@@ -178,7 +178,7 @@ class SQLiteConversationRepo:
             else:
                 rows = conn.execute(
                     """
-                    SELECT session_id, role, content, created_at, sources_json
+                    SELECT id, session_id, role, content, created_at, sources_json
                     FROM conversation_messages
                     WHERE content LIKE ?
                     ORDER BY id DESC
@@ -188,11 +188,12 @@ class SQLiteConversationRepo:
                 ).fetchall()
         return [
             ConversationMessage(
-                session_id=r[0],
-                role=r[1],
-                content=r[2],
-                created_at=r[3],
-                sources_json=r[4],
+                id=r[0],
+                session_id=r[1],
+                role=r[2],
+                content=r[3],
+                created_at=r[4],
+                sources_json=r[5],
             )
             for r in rows
         ]
@@ -209,7 +210,7 @@ class SQLiteConversationRepo:
         with sqlite3.connect(self._db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT session_id, role, content, created_at, sources_json
+                SELECT id, session_id, role, content, created_at, sources_json
                 FROM conversation_messages
                 WHERE session_id = ?
                 ORDER BY id DESC
@@ -220,18 +221,28 @@ class SQLiteConversationRepo:
         # Return in chronological order (oldest first)
         return [
             ConversationMessage(
-                session_id=r[0],
-                role=r[1],
-                content=r[2],
-                created_at=r[3],
-                sources_json=r[4],
+                id=r[0],
+                session_id=r[1],
+                role=r[2],
+                content=r[3],
+                created_at=r[4],
+                sources_json=r[5],
             )
             for r in reversed(rows)
         ]
 
-    def save_message(self, msg: ConversationMessage) -> None:
+    def save_message(self, msg: ConversationMessage | dict) -> int:
+        """插入消息，返回新消息 id。兼容 ConversationMessage 和 dict。"""
+        if isinstance(msg, dict):
+            msg = ConversationMessage(
+                session_id=msg.get("session_id", ""),
+                role=msg.get("role", ""),
+                content=msg.get("content", ""),
+                created_at=msg.get("created_at", ""),
+                sources_json=msg.get("sources_json"),
+            )
         with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO conversation_messages
                     (session_id, role, content, created_at, sources_json)
@@ -246,3 +257,24 @@ class SQLiteConversationRepo:
                 ),
             )
             conn.commit()
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def delete_message(self, message_id: int) -> bool:
+        """删除单条消息，返回是否成功"""
+        with sqlite3.connect(self._db_path) as conn:
+            cursor = conn.execute(
+                "DELETE FROM conversation_messages WHERE id = ?",
+                (message_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def update_message(self, message_id: int, content: str) -> bool:
+        """编辑消息内容，返回是否成功"""
+        with sqlite3.connect(self._db_path) as conn:
+            cursor = conn.execute(
+                "UPDATE conversation_messages SET content = ? WHERE id = ?",
+                (content, message_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0

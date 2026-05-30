@@ -135,6 +135,7 @@ class TestRunnerContainerInjection:
     def test_runner_prefers_container_turn_runner(self):
         from app.service_layer.api.query_routes import _build_runner
         from app.agent_layer.orchestration.turn_runner import TurnRunner
+        from app.agent_layer.orchestration.turn_params import SessionServices
 
         app, container = _build_app()
         real_runner = TurnRunner(
@@ -143,9 +144,11 @@ class TestRunnerContainerInjection:
             retrieval_gate=MagicMock(),
             source_mapper=MagicMock(),
             block_streamer=MagicMock(),
-            window_store=container.conversation_window,
-            editor_context_store=container.editor_context_store,
-            persistence=container.session_persistence,
+            session=SessionServices(
+                window_store=container.conversation_window,
+                editor_context_store=container.editor_context_store,
+                persistence=container.session_persistence,
+            ),
         )
         container.turn_runner = real_runner
         mock_request = MagicMock()

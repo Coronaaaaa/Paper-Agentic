@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+
+from app.agent_layer.runtime.chat_model import ChatModel
 
 logger = logging.getLogger("paper-assistant")
 
@@ -88,11 +89,11 @@ def _parse_verdict(raw: str) -> tuple[str, str, str]:
 
 
 async def judge_evidence(
-    chat_model: Any,
+    chat_model: ChatModel,
     query: str,
     context: str,
     *,
-    judge_model: Any | None = None,
+    judge_model: ChatModel | None = None,
 ) -> EvidenceJudgment:
     """判断检索到的证据是否足以回答查询。
 
@@ -133,13 +134,13 @@ async def judge_evidence(
 
 
 async def reflect(
-    chat_model: Any,
+    chat_model: ChatModel,
     original_query: str,
     llm_output: str,
     context: str = "",
     max_rounds: int = _MAX_ROUNDS,
     *,
-    reflection_model: Any | None = None,
+    reflection_model: ChatModel | None = None,
 ) -> ReflectionResult:
     """对 LLM 输出执行 reflection 循环。
 

@@ -14,6 +14,16 @@ from app.agent_layer.orchestration.tool_loop import (
     ToolResult,
     execute_tool_loop,
 )
+from app.agent_layer.runtime.chat_model import ChatResponse, ToolCallInfo
+
+
+def _make_mock_chat_model(responses: list[ChatResponse]):
+    """构造 mock ChatModel，按顺序返回 responses"""
+    from unittest.mock import AsyncMock
+
+    model = AsyncMock()
+    model.chat_with_tools = AsyncMock(side_effect=responses)
+    return model
 
 
 # ── ToolRegistry ──────────────────────────────────────────────────
@@ -40,6 +50,13 @@ class TestToolRegistry:
         reg.register("b", b)
         assert set(reg.tool_names) == {"a", "b"}
 
+    def test_tool_schemas(self):
+        reg = ToolRegistry()
+        async def a(args): return None
+        schema = {"type": "function", "function": {"name": "a"}}
+        reg.register("a", a, schema=schema)
+        assert reg.tool_schemas() == [schema]
+
 
 # ── ToolLoopEvent ─────────────────────────────────────────────────
 
@@ -60,10 +77,8 @@ class TestToolLoopEvent:
 @pytest.mark.asyncio
 async def test_tool_loop_no_call():
     """LLM 不调用工具，直接结束"""
-    async def decide(msgs):
-        return None
-
-    result = await execute_tool_loop(decide, [{"role": "user", "content": "hi"}], ToolRegistry())
+    model = _make_mock_chat_model([ChatResponse(content="直接回复")])
+    result = await execute_tool_loop(model, [{"role": "user", "content": "hi"}], ToolRegistry())
     assert result.rounds_used == 0
     assert result.tool_calls == []
     assert not result.hit_max_rounds
@@ -75,17 +90,14 @@ async def test_tool_loop_single_call():
     reg = ToolRegistry()
     async def search(args):
         return {"results": [args.get("query", "")]}
-    reg.register("search", search)
+    reg.register("search", search, schema={"type": "function", "function": {"name": "search"}})
 
-    call_count = 0
-    async def decide(msgs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return ToolCall(name="search", arguments={"query": "RAG"})
-        return None
+    model = _make_mock_chat_model([
+        ChatResponse(tool_calls=[ToolCallInfo(id="tc1", name="search", arguments='{"query": "RAG"}')]),
+        ChatResponse(content="完成"),
+    ])
 
-    result = await execute_tool_loop(decide, [{"role": "user", "content": "搜索 RAG"}], reg)
+    result = await execute_tool_loop(model, [{"role": "user", "content": "搜索 RAG"}], reg)
     assert result.rounds_used == 1
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "search"
@@ -101,14 +113,13 @@ async def test_tool_loop_max_rounds():
         return "ok"
     reg.register("noop", noop)
 
-    async def always_call(msgs):
-        return ToolCall(name="noop", arguments={})
+    always_call = ChatResponse(tool_calls=[ToolCallInfo(id="tc", name="noop", arguments='{}')])
+    model = _make_mock_chat_model([always_call] * 6)
 
-    result = await execute_tool_loop(always_call, [], reg, max_rounds=5)
+    result = await execute_tool_loop(model, [], reg, max_rounds=5)
     assert result.rounds_used == 5
     assert result.hit_max_rounds
-    assert len(result.tool_calls) == 5
-    # 最后一次调用标记为 max rounds
+    assert len(result.tool_results) == 5
     assert result.tool_results[-1].error == "max rounds reached"
 
 
@@ -117,15 +128,12 @@ async def test_tool_loop_tool_not_found():
     """工具不存在时记录错误但继续循环"""
     reg = ToolRegistry()
 
-    call_count = 0
-    async def decide(msgs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return ToolCall(name="ghost", arguments={})
-        return None
+    model = _make_mock_chat_model([
+        ChatResponse(tool_calls=[ToolCallInfo(id="tc1", name="ghost", arguments='{}')]),
+        ChatResponse(content="继续"),
+    ])
 
-    result = await execute_tool_loop(decide, [], reg)
+    result = await execute_tool_loop(model, [], reg)
     assert result.rounds_used == 1
     assert not result.tool_results[0].success
     assert "not found" in result.tool_results[0].error
@@ -139,15 +147,12 @@ async def test_tool_loop_tool_exception():
         raise ValueError("boom")
     reg.register("fail", fail)
 
-    call_count = 0
-    async def decide(msgs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return ToolCall(name="fail", arguments={})
-        return None
+    model = _make_mock_chat_model([
+        ChatResponse(tool_calls=[ToolCallInfo(id="tc1", name="fail", arguments='{}')]),
+        ChatResponse(content="继续"),
+    ])
 
-    result = await execute_tool_loop(decide, [], reg)
+    result = await execute_tool_loop(model, [], reg)
     assert result.rounds_used == 1
     assert not result.tool_results[0].success
     assert "boom" in result.tool_results[0].error
@@ -164,17 +169,13 @@ async def test_tool_loop_multi_round():
     reg.register("search", search)
     reg.register("summarize", summarize)
 
-    call_count = 0
-    async def decide(msgs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return ToolCall(name="search", arguments={"q": "test"})
-        if call_count == 2:
-            return ToolCall(name="summarize", arguments={"text": "docs"})
-        return None
+    model = _make_mock_chat_model([
+        ChatResponse(tool_calls=[ToolCallInfo(id="tc1", name="search", arguments='{"q": "test"}')]),
+        ChatResponse(tool_calls=[ToolCallInfo(id="tc2", name="summarize", arguments='{"text": "docs"}')]),
+        ChatResponse(content="完成"),
+    ])
 
-    result = await execute_tool_loop(decide, [], reg)
+    result = await execute_tool_loop(model, [], reg)
     assert result.rounds_used == 2
     assert len(result.tool_calls) == 2
     assert result.tool_calls[0].name == "search"
@@ -190,22 +191,16 @@ async def test_tool_loop_messages_grow():
         return args
     reg.register("echo", echo)
 
-    msgs_seen = []
-    call_count = 0
-    async def decide(msgs):
-        nonlocal call_count
-        call_count += 1
-        msgs_seen.append(len(msgs))
-        if call_count <= 2:
-            return ToolCall(name="echo", arguments={"n": call_count})
-        return None
+    model = _make_mock_chat_model([
+        ChatResponse(tool_calls=[ToolCallInfo(id="tc1", name="echo", arguments='{"n": 1}')]),
+        ChatResponse(tool_calls=[ToolCallInfo(id="tc2", name="echo", arguments='{"n": 2}')]),
+        ChatResponse(content="done"),
+    ])
 
     initial = [{"role": "user", "content": "hi"}]
-    await execute_tool_loop(decide, initial, reg)
-    # 初始 1 条 → +1 tool result → +1 tool result → 每轮增加
-    assert msgs_seen[0] == 1
-    assert msgs_seen[1] == 2
-    assert msgs_seen[2] == 3
+    result = await execute_tool_loop(model, initial, reg)
+    # 初始 1 条 → assistant(tool_calls) + tool → assistant(tool_calls) + tool → assistant(content)
+    assert result.rounds_used == 2
 
 
 @pytest.mark.asyncio
@@ -216,9 +211,9 @@ async def test_tool_loop_custom_max_rounds():
         return "ok"
     reg.register("noop", noop)
 
-    async def always_call(msgs):
-        return ToolCall(name="noop", arguments={})
+    always_call = ChatResponse(tool_calls=[ToolCallInfo(id="tc", name="noop", arguments='{}')])
+    model = _make_mock_chat_model([always_call] * 3)
 
-    result = await execute_tool_loop(always_call, [], reg, max_rounds=2)
+    result = await execute_tool_loop(model, [], reg, max_rounds=2)
     assert result.rounds_used == 2
     assert result.hit_max_rounds

@@ -6,12 +6,26 @@ import asyncio
 import logging
 import random
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI, RateLimitError
 
 from app.service_layer.config.settings import BackendSettings
 
 logger = logging.getLogger("paper-assistant")
+
+
+@dataclass
+class ToolCallInfo:
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass
+class ChatResponse:
+    content: str = ""
+    tool_calls: list[ToolCallInfo] = field(default_factory=list)
 
 
 class ChatModel:
@@ -89,6 +103,52 @@ class ChatModel:
                     stream=False,
                 )
                 return response.choices[0].message.content or ""
+            except RateLimitError as exc:
+                last_exc = exc
+                wait = self._backoff_seconds(exc)
+                logger.warning(
+                    "429 rate limit on model %s, rotating to next after %.1fs",
+                    attempt_model,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+            except Exception:
+                raise
+        raise last_exc  # type: ignore[misc]
+
+    async def chat_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        model: str | None = None,
+    ) -> ChatResponse:
+        if self._client is None:
+            raise RuntimeError("LLM client not initialized")
+
+        last_exc: Exception | None = None
+        for attempt_model in self._model_chain(model):
+            try:
+                kwargs: dict = dict(
+                    model=attempt_model,
+                    messages=messages,
+                    max_tokens=self._max_tokens,
+                    temperature=self._temperature,
+                    stream=False,
+                )
+                if tools:
+                    kwargs["tools"] = tools
+                response = await self._client.chat.completions.create(**kwargs)
+                choice = response.choices[0].message
+                content = choice.content or ""
+                tool_calls = []
+                if choice.tool_calls:
+                    for tc in choice.tool_calls:
+                        tool_calls.append(ToolCallInfo(
+                            id=tc.id,
+                            name=tc.function.name,
+                            arguments=tc.function.arguments,
+                        ))
+                return ChatResponse(content=content, tool_calls=tool_calls)
             except RateLimitError as exc:
                 last_exc = exc
                 wait = self._backoff_seconds(exc)

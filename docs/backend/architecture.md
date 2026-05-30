@@ -751,7 +751,7 @@ compact 的目标：
 
 这里的含义：
 
-- `tool call`：调用检索、读取锚点、压缩历史、生成标题等内部工具
+- `tool call`：调用检索、读取锚点、压缩历史、生成标题等内部工具。使用标准 OpenAI ToolCalling API（`tools` 参数 + `tool_calls` 响应），通过 `ChatModel.chat_with_tools()` 调用
 - `loop`：允许有限轮验证和再检索
 - `tasklist`：把本轮响应拆成若干执行子任务，而不是一轮 prompt 把一切说死
 

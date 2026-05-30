@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.agent_layer.contracts.query import AskRequest
 from app.agent_layer.orchestration.turn_runner import TurnRunner
+from app.agent_layer.orchestration.turn_params import SessionServices
 from app.agent_layer.planning.retrieval_gate import should_retrieve
 from app.agent_layer.planning.snapshot_builder import build_snapshot
 from app.agent_layer.response.block_streamer import stream_to_blocks
@@ -33,12 +34,14 @@ def _build_runner(request: Request) -> TurnRunner:
         retrieval_gate=should_retrieve,
         source_mapper=map_sources,
         block_streamer=stream_to_blocks,
-        window_store=ConversationWindowStore.from_context_window(
-            context_window_tokens=settings.context_window_tokens,
-            max_output_tokens=settings.max_output_tokens,
+        session=SessionServices(
+            window_store=ConversationWindowStore.from_context_window(
+                context_window_tokens=settings.context_window_tokens,
+                max_output_tokens=settings.max_output_tokens,
+            ),
+            editor_context_store=EditorContextStore(),
+            persistence=SessionPersistence(),
         ),
-        editor_context_store=EditorContextStore(),
-        persistence=SessionPersistence(),
     )
 
 

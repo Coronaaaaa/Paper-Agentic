@@ -7,11 +7,13 @@ import inspect
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any, Protocol
+from typing import Protocol
 
 from openai import APIConnectionError, APIStatusError, RateLimitError
 
-from app.agent_layer.contracts.query import AskRequest
+from app.agent_layer.contracts.content_block import ContentBlock
+from app.agent_layer.contracts.query import AskRequest, FrozenTurnSnapshot
+from app.agent_layer.contracts.source_card import SourceCard
 from app.agent_layer.contracts.sse_events import (
     BlockEvent,
     DoneEvent,
@@ -30,6 +32,14 @@ from app.agent_layer.orchestration.tool_loop import (
     ToolRegistry,
     execute_tool_loop,
 )
+from app.agent_layer.orchestration.turn_params import (
+    RetrievalServices,
+    SessionServices,
+    TurnConfig,
+    VectorStoreProto as VectorStoreProtocol,
+    KeywordSearchProto as KeywordSearchProtocol,
+    EmbeddingClientProto as EmbeddingClientProtocol,
+)
 from app.agent_layer.runtime.chat_model import ChatModel
 from app.agent_layer.runtime.token_budget import TokenBudget
 from app.agent_layer.session.editor_context_store import EditorContextStore
@@ -39,32 +49,26 @@ from app.agent_layer.session.window_store import ConversationWindowStore
 logger = logging.getLogger("paper-assistant")
 
 
-class VectorStoreProtocol(Protocol):
-    def query(self, vector: list[float], topk: int, paper_ids: list[str] | None = None) -> list: ...
-
-
-class KeywordSearchProtocol(Protocol):
-    def query(self, query_text: str, topk: int, paper_ids: list[str] | None = None) -> list: ...
-
-
-class EmbeddingClientProtocol(Protocol):
-    async def embed_single(self, text: str) -> list[float]: ...
-
-
 class SnapshotBuilder(Protocol):
-    def __call__(self, request: Any, editor_context: Any, recent_window: list, history_summary: str) -> Any: ...
+    def __call__(
+        self,
+        request: AskRequest,
+        editor_context: dict | None,
+        recent_window: list[dict],
+        history_summary: str,
+    ) -> FrozenTurnSnapshot: ...
 
 
 class RetrievalGate(Protocol):
-    def __call__(self, snapshot: Any) -> bool: ...
+    def __call__(self, snapshot: FrozenTurnSnapshot) -> bool: ...
 
 
 class SourceMapper(Protocol):
-    def __call__(self, retrieval_results: list[dict]) -> list: ...
+    def __call__(self, retrieval_results: list[dict]) -> list[SourceCard]: ...
 
 
 class BlockStreamer(Protocol):
-    def __call__(self, text: str, sources: list) -> list: ...
+    def __call__(self, text: str, sources: list[SourceCard]) -> list[ContentBlock]: ...
 
 
 def _user_friendly_error(exc: Exception) -> dict:
@@ -132,30 +136,27 @@ class TurnRunner:
         retrieval_gate: RetrievalGate,
         source_mapper: SourceMapper,
         block_streamer: BlockStreamer,
-        window_store: ConversationWindowStore,
-        editor_context_store: EditorContextStore,
-        persistence: SessionPersistence,
-        vector_store: VectorStoreProtocol | None = None,
-        keyword_search: KeywordSearchProtocol | None = None,
-        embedding_client: EmbeddingClientProtocol | None = None,
+        session: SessionServices,
+        retrieval: RetrievalServices | None = None,
         tool_registry: ToolRegistry | None = None,
-        cache_mode: str = "memory",
-        reflection_model: ChatModel | None = None,
+        config: TurnConfig | None = None,
     ) -> None:
         self._chat_model = chat_model
-        self._reflection_model = reflection_model
+        config = config or TurnConfig()
+        self._reflection_model = config.reflection_model
         self._snapshot_builder = snapshot_builder
         self._retrieval_gate = retrieval_gate
         self._source_mapper = source_mapper
         self._block_streamer = block_streamer
-        self._window_store = window_store
-        self._editor_context_store = editor_context_store
-        self._persistence = persistence
-        self._vector_store = vector_store
-        self._keyword_search = keyword_search
-        self._embedding_client = embedding_client
+        self._window_store = session.window_store
+        self._editor_context_store = session.editor_context_store
+        self._persistence = session.persistence
+        retrieval = retrieval or RetrievalServices()
+        self._vector_store = retrieval.vector_store
+        self._keyword_search = retrieval.keyword_search
+        self._embedding_client = retrieval.embedding_client
         self._tool_registry = tool_registry
-        self._cache_mode = cache_mode
+        self._cache_mode = config.cache_mode
 
     async def run(self, request: AskRequest) -> AsyncIterator[str]:
         request_id = uuid.uuid4().hex
@@ -281,30 +282,12 @@ class TurnRunner:
             async for chunk in self._chat_model.chat_stream(messages, model=model_override):
                 full_text += chunk
 
-            # ── Tool Loop：LLM 可决定调用内部工具 ──
+            # ── Tool Loop：使用标准 ToolCalling API ──
             if self._tool_registry and self._tool_registry.tool_names:
                 from app.agent_layer.orchestration.tool_loop import execute_tool_loop
 
-                async def _llm_decide(msgs: list[dict]):
-                    # 让 LLM 判断是否需要工具调用
-                    tool_prompt = msgs + [{"role": "system", "content":
-                        f"你可以调用以下工具：{self._tool_registry.tool_names}。"
-                        "如果需要调用工具，返回 JSON：{\"name\": \"工具名\", \"arguments\": {...}}。"
-                        "如果不需要调用工具，直接回答用户问题即可，不要返回 JSON。"
-                    }]
-                    resp = await self._chat_model.chat(tool_prompt)
-                    import json as _json
-                    try:
-                        data = _json.loads(resp.strip())
-                        if "name" in data:
-                            from app.agent_layer.orchestration.tool_loop import ToolCall
-                            return ToolCall(name=data["name"], arguments=data.get("arguments", {}))
-                    except (_json.JSONDecodeError, ValueError):
-                        pass
-                    return None  # 不需要工具调用
-
                 tool_result = await execute_tool_loop(
-                    llm_decide=_llm_decide,
+                    chat_model=self._chat_model,
                     initial_messages=messages,
                     registry=self._tool_registry,
                 )
@@ -327,7 +310,7 @@ class TurnRunner:
             err = _user_friendly_error(exc)
             yield ErrorEvent(**err).to_sse_frame()
 
-    async def _freeze_snapshot(self, request: AskRequest, request_id: str) -> Any:
+    async def _freeze_snapshot(self, request: AskRequest, request_id: str) -> FrozenTurnSnapshot:
         editor_context = None
         freeze_fn = getattr(self._editor_context_store, "freeze", None)
         if callable(freeze_fn):
@@ -354,7 +337,7 @@ class TurnRunner:
             history_summary=history_summary,
         )
 
-    def _assemble_query(self, snapshot: Any) -> str:
+    def _assemble_query(self, snapshot: FrozenTurnSnapshot) -> str:
         """根据 used_inputs 权重组装查询文本，权重高的排在前面"""
         weights = snapshot.used_inputs
         parts: list[tuple[float, str]] = []
@@ -376,6 +359,7 @@ class TurnRunner:
 
         topk=0 时融合不限数量，由 _build_context 的 TokenBudget 动态裁剪。
         """
+        from app.data_layer.storage.sqlite_runtime.async_wrapper import run_sync
         from app.service_layer.config.settings import get_settings
         _s = get_settings()
         dense_results = []
@@ -384,13 +368,13 @@ class TurnRunner:
         if self._embedding_client is not None and self._vector_store is not None:
             try:
                 query_vector = await self._embedding_client.embed_single(query_text)
-                dense_results = self._vector_store.query(query_vector, topk=_s.retrieval_topk_dense, paper_ids=paper_ids)
+                dense_results = await run_sync(self._vector_store.query, query_vector, topk=_s.retrieval_topk_dense, paper_ids=paper_ids)
             except Exception as exc:
                 logger.warning("Dense retrieval failed: %s", exc)
 
         if self._keyword_search is not None:
             try:
-                sparse_results = self._keyword_search.query(query_text, topk=_s.retrieval_topk_sparse, paper_ids=paper_ids)
+                sparse_results = await run_sync(self._keyword_search.query, query_text, topk=_s.retrieval_topk_sparse, paper_ids=paper_ids)
             except Exception as exc:
                 logger.warning("Keyword retrieval failed: %s", exc)
 
@@ -430,7 +414,7 @@ class TurnRunner:
 
         return "\n\n---\n\n".join(context_parts)
 
-    def _build_messages(self, snapshot: Any, context: str) -> list[dict]:
+    def _build_messages(self, snapshot: FrozenTurnSnapshot, context: str) -> list[dict]:
         """使用快照中冻结的历史，不再读取 live window_store"""
         system_parts = [
             _RAG_SYSTEM_PROMPT.format(context=context) if context else _NO_RAG_SYSTEM_PROMPT
@@ -447,10 +431,10 @@ class TurnRunner:
 
     async def _persist(
         self,
-        snapshot: Any,
+        snapshot: FrozenTurnSnapshot,
         full_text: str,
-        blocks: list,
-        sources: list,
+        blocks: list[ContentBlock],
+        sources: list[SourceCard],
         compacted: bool = False,
     ) -> None:
         """持久化会话，失败不影响 SSE 输出（降级记录日志）"""

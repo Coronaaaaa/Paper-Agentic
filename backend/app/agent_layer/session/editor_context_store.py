@@ -12,7 +12,7 @@ import asyncio
 import copy
 import logging
 import time
-from typing import Any
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger("paper-assistant")
 
@@ -72,7 +72,7 @@ class EditorContextStore:
 
     def start_polling(
         self,
-        poll_fn: Any,
+        poll_fn: Callable[[], Awaitable[dict | None]],
         session_id: str,
         interval: float = _POLL_INTERVAL_SECONDS,
     ) -> None:

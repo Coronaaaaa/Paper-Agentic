@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.agent_layer.runtime.chat_model import ChatModel, ChatResponse
+
 logger = logging.getLogger("paper-assistant")
 
 _MAX_TOOL_ROUNDS = 5
@@ -41,7 +43,7 @@ class ToolCall:
 class ToolResult:
     tool_name: str
     success: bool
-    data: Any = None
+    data: str | dict | list | None = None
     error: str = ""
 
 
@@ -55,17 +57,20 @@ class ToolLoopResult:
 
 
 # 工具函数签名：接收参数字典，返回任意结果
-ToolFunc = Callable[[dict[str, Any]], Coroutine[Any, Any, Any]]
+ToolFunc = Callable[[dict[str, Any]], Coroutine[Any, Any, str | dict | list | None]]
 
 
 class ToolRegistry:
-    """工具注册表：名称 → 可调用函数"""
+    """工具注册表：名称 → 可调用函数 + schema"""
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolFunc] = {}
+        self._schemas: dict[str, dict] = {}
 
-    def register(self, name: str, func: ToolFunc) -> None:
+    def register(self, name: str, func: ToolFunc, schema: dict | None = None) -> None:
         self._tools[name] = func
+        if schema:
+            self._schemas[name] = schema
 
     def get(self, name: str) -> ToolFunc | None:
         return self._tools.get(name)
@@ -77,17 +82,26 @@ class ToolRegistry:
     def tool_names(self) -> list[str]:
         return list(self._tools.keys())
 
+    def tool_schemas(self) -> list[dict]:
+        return list(self._schemas.values())
+
 
 async def execute_tool_loop(
-    llm_decide: Callable[[list[dict]], Coroutine[Any, Any, ToolCall | None]],
+    chat_model: ChatModel,
     initial_messages: list[dict],
     registry: ToolRegistry,
     max_rounds: int = _MAX_TOOL_ROUNDS,
 ) -> ToolLoopResult:
     """执行多轮工具调用循环。
 
+    使用标准 OpenAI ToolCalling API：
+    1. 发送消息 + tools schema 给 LLM
+    2. 如果 LLM 返回 tool_calls，执行对应工具
+    3. 将工具结果追加到消息列表，继续循环
+    4. 如果 LLM 不返回 tool_calls（直接回复），结束循环
+
     Args:
-        llm_decide: 接收当前消息列表，返回 ToolCall 或 None（表示结束循环）
+        chat_model: LLM 客户端
         initial_messages: 初始消息列表
         registry: 工具注册表
         max_rounds: 最大轮次（默认 5，硬上限）
@@ -100,69 +114,96 @@ async def execute_tool_loop(
     tool_results: list[ToolResult] = []
     rounds_used = 0
     hit_max = False
+    schemas = registry.tool_schemas()
 
     for round_num in range(1, max_rounds + 1):
-        call = await llm_decide(messages)
-        if call is None:
+        response: ChatResponse = await chat_model.chat_with_tools(
+            messages, tools=schemas if schemas else None,
+        )
+
+        if not response.tool_calls:
+            # LLM 直接回复，不调用工具 → 结束循环
+            if response.content:
+                messages.append({"role": "assistant", "content": response.content})
             break
 
         rounds_used = round_num
-        tool_calls.append(call)
 
         if round_num == max_rounds:
             hit_max = True
             logger.warning("Tool loop hit max rounds (%d), forcing stop", max_rounds)
-            tool_results.append(ToolResult(
-                tool_name=call.name,
-                success=False,
-                error="max rounds reached",
-            ))
+            for tc in response.tool_calls:
+                tool_results.append(ToolResult(
+                    tool_name=tc.name,
+                    success=False,
+                    error="max rounds reached",
+                ))
             break
 
-        func = registry.get(call.name)
-        if func is None:
-            logger.warning("Tool '%s' not found in registry", call.name)
-            tool_results.append(ToolResult(
-                tool_name=call.name,
-                success=False,
-                error=f"tool '{call.name}' not found",
-            ))
-            messages.append({
-                "role": "tool",
-                "content": json.dumps({"error": f"tool '{call.name}' not found"}, ensure_ascii=False),
-            })
-            continue
+        # 追加 assistant 消息（含 tool_calls）
+        assistant_msg: dict[str, Any] = {"role": "assistant"}
+        if response.content:
+            assistant_msg["content"] = response.content
+        else:
+            assistant_msg["content"] = None
+        assistant_msg["tool_calls"] = [
+            {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": tc.arguments}}
+            for tc in response.tool_calls
+        ]
+        messages.append(assistant_msg)
 
-        try:
-            result = await func(call.arguments)
-            tool_results.append(ToolResult(
-                tool_name=call.name,
-                success=True,
-                data=result,
-            ))
-            messages.append({
-                "role": "tool",
-                "content": json.dumps(
-                    {"tool": call.name, "result": result},
-                    ensure_ascii=False,
-                    default=str,
-                ),
-            })
-            logger.info("Tool '%s' executed successfully (round %d)", call.name, round_num)
-        except Exception as exc:
-            logger.warning("Tool '%s' failed: %s", call.name, exc)
-            tool_results.append(ToolResult(
-                tool_name=call.name,
-                success=False,
-                error=str(exc),
-            ))
-            messages.append({
-                "role": "tool",
-                "content": json.dumps(
-                    {"tool": call.name, "error": str(exc)},
-                    ensure_ascii=False,
-                ),
-            })
+        # 执行每个 tool call
+        for tc_info in response.tool_calls:
+            call = ToolCall(name=tc_info.name, arguments=json.loads(tc_info.arguments) if tc_info.arguments else {})
+            tool_calls.append(call)
+
+            func = registry.get(tc_info.name)
+            if func is None:
+                logger.warning("Tool '%s' not found in registry", tc_info.name)
+                tool_results.append(ToolResult(
+                    tool_name=tc_info.name,
+                    success=False,
+                    error=f"tool '{tc_info.name}' not found",
+                ))
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_info.id,
+                    "content": json.dumps({"error": f"tool '{tc_info.name}' not found"}, ensure_ascii=False),
+                })
+                continue
+
+            try:
+                result = await func(call.arguments)
+                tool_results.append(ToolResult(
+                    tool_name=tc_info.name,
+                    success=True,
+                    data=result,
+                ))
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_info.id,
+                    "content": json.dumps(
+                        {"tool": tc_info.name, "result": result},
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                })
+                logger.info("Tool '%s' executed successfully (round %d)", tc_info.name, round_num)
+            except Exception as exc:
+                logger.warning("Tool '%s' failed: %s", tc_info.name, exc)
+                tool_results.append(ToolResult(
+                    tool_name=tc_info.name,
+                    success=False,
+                    error=str(exc),
+                ))
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_info.id,
+                    "content": json.dumps(
+                        {"tool": tc_info.name, "error": str(exc)},
+                        ensure_ascii=False,
+                    ),
+                })
 
     final_output = messages[-1].get("content", "") if messages else ""
 

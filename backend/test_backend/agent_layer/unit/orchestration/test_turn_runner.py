@@ -241,6 +241,7 @@ def runner(
     mock_persistence,
 ):
     from app.agent_layer.orchestration.turn_runner import TurnRunner
+    from app.agent_layer.orchestration.turn_params import SessionServices
 
     return TurnRunner(
         chat_model=mock_chat_model,
@@ -248,9 +249,11 @@ def runner(
         retrieval_gate=mock_retrieval_gate,
         source_mapper=mock_source_mapper,
         block_streamer=mock_block_streamer,
-        window_store=mock_window_store,
-        editor_context_store=mock_editor_context_store,
-        persistence=mock_persistence,
+        session=SessionServices(
+            window_store=mock_window_store,
+            editor_context_store=mock_editor_context_store,
+            persistence=mock_persistence,
+        ),
     )
 
 

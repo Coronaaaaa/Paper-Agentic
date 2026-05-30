@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.service_layer.api.auth import InMemoryRateLimiter, rate_limit_middleware
 from app.service_layer.bootstrap.container import AppContainer
 from app.service_layer.bootstrap.lifespan import build_lifespan
 from app.service_layer.bootstrap.logging import configure_logging
@@ -22,6 +23,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    if settings.rate_limit_per_minute > 0:
+        app.state.rate_limiter = InMemoryRateLimiter(max_requests=settings.rate_limit_per_minute)
+        app.middleware("http")(rate_limit_middleware)
+
     register_exception_handlers(app)
     app.include_router(api_router)
     return app

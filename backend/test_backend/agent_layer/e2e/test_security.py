@@ -142,15 +142,19 @@ class TestPersistenceDegradation:
 
         ws.add_message = broken_add
 
+        from app.agent_layer.orchestration.turn_params import SessionServices
+
         runner = TurnRunner(
             chat_model=mock_model,
             snapshot_builder=build_snapshot,
             retrieval_gate=should_retrieve,
             source_mapper=map_sources,
             block_streamer=stream_to_blocks,
-            window_store=ws,
-            editor_context_store=EditorContextStore(),
-            persistence=SessionPersistence(),
+            session=SessionServices(
+                window_store=ws,
+                editor_context_store=EditorContextStore(),
+                persistence=SessionPersistence(),
+            ),
         )
 
         req = AskRequest(session_id="degrade-test", prompt="测试降级", enable_rag=False)

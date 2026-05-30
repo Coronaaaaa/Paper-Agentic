@@ -120,6 +120,10 @@ class BackendSettings(BaseSettings):
 
     cors_allow_origins: list[str] = Field(default_factory=lambda: ["*"], alias="CORS_ALLOW_ORIGINS")
 
+    # ── 安全 ──
+    api_key: str = Field(default="", alias="API_KEY")
+    rate_limit_per_minute: int = Field(default=0, alias="RATE_LIMIT_PER_MINUTE")
+
     model_config = SettingsConfigDict(
         env_file=str(_BACKEND_ROOT / ".env"),
         extra="ignore",

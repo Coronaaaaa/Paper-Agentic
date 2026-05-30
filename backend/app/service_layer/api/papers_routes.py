@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
+from app.data_layer.storage.sqlite_runtime.async_wrapper import run_sync
 from app.service_layer.schemas.library import PaperItemOut, PaperListResponse
 
 router = APIRouter(tags=["papers"])
@@ -21,11 +22,12 @@ async def list_papers(
     container = request.app.state.container
     has_filter = any(v is not None for v in (title, authors, year_from, year_to))
     if has_filter:
-        items = container.library_repo.list_items_filtered(
+        items = await run_sync(
+            container.library_repo.list_items_filtered,
             title=title, authors=authors, year_from=year_from, year_to=year_to,
         )
     else:
-        items = container.library_repo.list_items()
+        items = await run_sync(container.library_repo.list_items)
     papers = [
         PaperItemOut(
             paper_id=item.item_id,
@@ -47,7 +49,7 @@ async def list_papers(
 @router.get("/papers/{paper_id}/open")
 async def open_paper(paper_id: str, request: Request):
     container = request.app.state.container
-    item = container.library_repo.get(paper_id)
+    item = await run_sync(container.library_repo.get, paper_id)
     if not item:
         raise HTTPException(status_code=404, detail="论文不存在")
 
@@ -70,7 +72,7 @@ async def open_paper(paper_id: str, request: Request):
 @router.delete("/papers/{paper_id}")
 async def delete_paper(paper_id: str, request: Request):
     container = request.app.state.container
-    item = container.library_repo.get(paper_id)
+    item = await run_sync(container.library_repo.get, paper_id)
     if not item:
         raise HTTPException(status_code=404, detail="论文不存在")
     container.document_ingest.delete_document(paper_id)

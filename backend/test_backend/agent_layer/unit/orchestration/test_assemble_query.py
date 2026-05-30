@@ -36,6 +36,7 @@ class _FakeSnapshot:
 def _make_runner():
     """构造 TurnRunner 实例，依赖全部 mock"""
     from app.agent_layer.orchestration.turn_runner import TurnRunner
+    from app.agent_layer.orchestration.turn_params import SessionServices
 
     return TurnRunner(
         chat_model=MagicMock(),
@@ -43,9 +44,11 @@ def _make_runner():
         retrieval_gate=MagicMock(),
         source_mapper=MagicMock(),
         block_streamer=MagicMock(),
-        window_store=MagicMock(),
-        editor_context_store=MagicMock(),
-        persistence=MagicMock(),
+        session=SessionServices(
+            window_store=MagicMock(),
+            editor_context_store=MagicMock(),
+            persistence=MagicMock(),
+        ),
     )
 
 

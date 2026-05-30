@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.agent_layer.contracts.query import AskRequest
 from app.data_layer.storage.sqlite_runtime._types import ConversationSession, utc_now_iso
+from app.data_layer.storage.sqlite_runtime.async_wrapper import run_sync
 from app.service_layer.schemas.conversation import (
     ChatRequest,
     ConversationMessageOut,
@@ -23,7 +24,7 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 @router.get("", response_model=list[ConversationSessionOut])
 async def list_sessions(request: Request):
     container = request.app.state.container
-    sessions = container.conversation_repo.list_sessions(limit=50, offset=0)
+    sessions = await run_sync(container.conversation_repo.list_sessions, limit=50, offset=0)
     return [ConversationSessionOut(**s.__dict__) for s in sessions]
 
 
@@ -33,14 +34,14 @@ async def create_session(request: Request):
     session_id = uuid.uuid4().hex[:12]
     now = utc_now_iso()
     session = ConversationSession(session_id=session_id, title="新对话", created_at=now, updated_at=now)
-    container.conversation_repo.upsert_session(session)
+    await run_sync(container.conversation_repo.upsert_session, session)
     return ConversationSessionOut(**session.__dict__)
 
 
 @router.get("/{session_id}", response_model=ConversationSessionOut)
 async def get_session(session_id: str, request: Request):
     container = request.app.state.container
-    session = container.conversation_repo.get_session(session_id)
+    session = await run_sync(container.conversation_repo.get_session, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
     return ConversationSessionOut(**session.__dict__)
@@ -49,10 +50,10 @@ async def get_session(session_id: str, request: Request):
 @router.delete("/{session_id}")
 async def delete_session(session_id: str, request: Request):
     container = request.app.state.container
-    session = container.conversation_repo.get_session(session_id)
+    session = await run_sync(container.conversation_repo.get_session, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
-    container.conversation_repo.delete_session(session_id)
+    await run_sync(container.conversation_repo.delete_session, session_id)
     return {"status": "ok", "message": "会话已删除"}
 
 
@@ -60,10 +61,10 @@ async def delete_session(session_id: str, request: Request):
 async def rename_session(session_id: str, body: RenameRequest, request: Request):
     """重命名会话"""
     container = request.app.state.container
-    ok = container.conversation_repo.rename_session(session_id, body.title)
+    ok = await run_sync(container.conversation_repo.rename_session, session_id, body.title)
     if not ok:
         raise HTTPException(status_code=404, detail="会话不存在")
-    session = container.conversation_repo.get_session(session_id)
+    session = await run_sync(container.conversation_repo.get_session, session_id)
     return ConversationSessionOut(**session.__dict__)
 
 
@@ -74,8 +75,8 @@ async def search_conversations(request: Request, q: str = "", limit: int = 20):
         return {"sessions": [], "messages": []}
 
     container = request.app.state.container
-    sessions = container.conversation_repo.search_sessions(q, limit=limit)
-    messages = container.conversation_repo.search_messages(q, limit=limit)
+    sessions = await run_sync(container.conversation_repo.search_sessions, q, limit=limit)
+    messages = await run_sync(container.conversation_repo.search_messages, q, limit=limit)
 
     return {
         "sessions": [ConversationSessionOut(**s.__dict__) for s in sessions],
@@ -86,7 +87,7 @@ async def search_conversations(request: Request, q: str = "", limit: int = 20):
 @router.get("/{session_id}/messages", response_model=list[ConversationMessageOut])
 async def list_messages(session_id: str, request: Request, limit: int = 50):
     container = request.app.state.container
-    messages = container.conversation_repo.get_messages(session_id, limit=limit)
+    messages = await run_sync(container.conversation_repo.get_messages, session_id, limit=limit)
     return [ConversationMessageOut(**m.__dict__) for m in messages]
 
 
@@ -94,7 +95,7 @@ async def list_messages(session_id: str, request: Request, limit: int = 50):
 async def delete_message(session_id: str, message_id: int, request: Request):
     """删除单条消息"""
     container = request.app.state.container
-    ok = container.conversation_repo.delete_message(message_id)
+    ok = await run_sync(container.conversation_repo.delete_message, message_id)
     if not ok:
         raise HTTPException(status_code=404, detail="消息不存在")
     return {"status": "ok", "message": "消息已删除"}
@@ -104,7 +105,7 @@ async def delete_message(session_id: str, message_id: int, request: Request):
 async def edit_message(session_id: str, message_id: int, body: EditMessageRequest, request: Request):
     """编辑消息内容"""
     container = request.app.state.container
-    ok = container.conversation_repo.update_message(message_id, body.content)
+    ok = await run_sync(container.conversation_repo.update_message, message_id, body.content)
     if not ok:
         raise HTTPException(status_code=404, detail="消息不存在")
     return ConversationMessageOut(id=message_id, session_id=session_id, role="", content=body.content)

@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile, File as FastA
 from fastapi.responses import StreamingResponse
 
 from app.data_layer.storage.sqlite_runtime._types import ImportTask, LibraryItem, utc_now_iso
+from app.data_layer.storage.sqlite_runtime.async_wrapper import run_sync
 from app.service_layer.schemas.library import ImportStartResponse, ImportStatusResponse
 
 logger = logging.getLogger("paper-assistant")
@@ -24,7 +25,6 @@ router = APIRouter(tags=["import"])
 async def start_import(file: UploadFile = FastAPIFile(...), request: Request = None):
     container = request.app.state.container
 
-    # 保存上传文件（UUID 前缀防同名覆盖 + 大小限制）
     uploads_dir = Path(container.settings.uploads_dir)
     uploads_dir.mkdir(parents=True, exist_ok=True)
     original_name = file.filename or "upload.pdf"
@@ -36,20 +36,18 @@ async def start_import(file: UploadFile = FastAPIFile(...), request: Request = N
         raise HTTPException(status_code=413, detail=f"文件超过大小限制 ({MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
     dest.write_bytes(content)
 
-    # 格式校验
     if dest.suffix.lower() != ".pdf":
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="仅支持 PDF 格式")
 
-    # 去重检查
     file_hash = _compute_file_hash(dest)
-    existing = container.library_repo.get_by_hash(file_hash)
+    existing = await run_sync(container.library_repo.get_by_hash, file_hash)
     if existing:
         return ImportStartResponse(task_id="", status="duplicate")
 
     task_id = uuid.uuid4().hex[:12]
     task = ImportTask(task_id=task_id, file_path=str(dest))
-    container.import_task_repo.create(task)
+    await run_sync(container.import_task_repo.create, task)
 
     asyncio.create_task(_run_import_with_progress(container, task_id, dest))
 
@@ -59,7 +57,7 @@ async def start_import(file: UploadFile = FastAPIFile(...), request: Request = N
 @router.get("/import/status/{task_id}", response_model=ImportStatusResponse)
 async def get_import_status(task_id: str, request: Request):
     container = request.app.state.container
-    task = container.import_task_repo.get(task_id)
+    task = await run_sync(container.import_task_repo.get, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="导入任务不存在")
 
@@ -127,16 +125,17 @@ async def _run_import_with_progress(container, task_id: str, file_path: Path):
         await bus.publish(task_id, event)
 
     try:
-        container.import_task_repo.update_status(task_id, "running")
+        await run_sync(container.import_task_repo.update_status, task_id, "running")
         await publish({"status": "running", "step": "starting", "paper_id": None})
 
         result = await container.document_ingest.ingest_document(file_path)
 
         if result.success:
-            container.import_task_repo.update_status(
+            await run_sync(
+                container.import_task_repo.update_status,
                 task_id, "completed", message=f"导入成功，{result.chunk_count} 个 chunk", paper_id=result.paper_id,
             )
-            container.library_repo.upsert(LibraryItem(
+            await run_sync(container.library_repo.upsert, LibraryItem(
                 item_id=result.paper_id,
                 title=file_path.stem,
                 file_path=str(file_path),
@@ -148,11 +147,11 @@ async def _run_import_with_progress(container, task_id: str, file_path: Path):
             ))
             await publish({"status": "completed", "step": "done", "paper_id": result.paper_id})
         else:
-            container.import_task_repo.update_status(task_id, "failed", message=result.error or "导入失败")
+            await run_sync(container.import_task_repo.update_status, task_id, "failed", message=result.error or "导入失败")
             await publish({"status": "failed", "step": "error", "error_msg": result.error})
     except Exception as e:
         logger.error("后台导入失败 [%s]: %s", task_id, e, exc_info=True)
-        container.import_task_repo.update_status(task_id, "failed", message=str(e))
+        await run_sync(container.import_task_repo.update_status, task_id, "failed", message=str(e))
         await publish({"status": "failed", "step": "error", "error_msg": str(e)})
     finally:
         await publish({"status": "done", "step": None, "paper_id": None})

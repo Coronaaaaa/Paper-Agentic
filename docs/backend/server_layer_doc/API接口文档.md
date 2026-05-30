@@ -6,7 +6,9 @@
 
 > Base URL: `http://127.0.0.1:8000/api/v1`
 >
-> 当前无认证，所有接口可直接访问。
+> 认证：通过 `API_KEY` 环境变量启用。未设置（空值）时所有接口可直接访问；设置后除 `/health` 外所有端点需携带 `Authorization: Bearer <API_KEY>`。
+>
+> 限流：通过 `RATE_LIMIT_PER_MINUTE` 环境变量启用。默认 0（不限流）。
 >
 > 本文档基于后端代码自动生成，是前端开发的唯一 API 契约。
 

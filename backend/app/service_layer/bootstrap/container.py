@@ -130,6 +130,9 @@ class AppContainer:
             return self._turn_runner
 
         from app.agent_layer.orchestration.turn_runner import TurnRunner
+        from app.agent_layer.orchestration.turn_params import (
+            RetrievalServices, SessionServices, TurnConfig,
+        )
         from app.agent_layer.planning.retrieval_gate import should_retrieve
         from app.agent_layer.planning.snapshot_builder import build_snapshot
         from app.agent_layer.response.block_streamer import stream_to_blocks
@@ -148,15 +151,21 @@ class AppContainer:
             retrieval_gate=should_retrieve,
             source_mapper=map_sources,
             block_streamer=stream_to_blocks,
-            window_store=self.conversation_window,
-            editor_context_store=self.editor_context_store,
-            persistence=self.session_persistence,
-            vector_store=self.vector_store,
-            keyword_search=self.keyword_search,
-            embedding_client=self.embedding_client,
+            session=SessionServices(
+                window_store=self.conversation_window,
+                editor_context_store=self.editor_context_store,
+                persistence=self.session_persistence,
+            ),
+            retrieval=RetrievalServices(
+                vector_store=self.vector_store,
+                keyword_search=self.keyword_search,
+                embedding_client=self.embedding_client,
+            ),
             tool_registry=tool_registry,
-            cache_mode="memory",
-            reflection_model=self.reflection_chat_model,
+            config=TurnConfig(
+                cache_mode="memory",
+                reflection_model=self.reflection_chat_model,
+            ),
         )
         return self._turn_runner
 
@@ -173,6 +182,9 @@ class AppContainer:
         await self.chat_model.close()
         await self.embedding_client.close()
         self.vector_store.close()
+        self.conversation_repo.close()
+        self.library_repo.close()
+        self.import_task_repo.close()
 
     def health(self) -> dict:
         components = {
@@ -241,7 +253,46 @@ def _build_tool_registry(
         summary = await compact_conversation(chat_model, messages)
         return {"summary": summary}
 
-    registry.register("retrieve", _retrieve)
-    registry.register("read_anchor", _read_anchor)
-    registry.register("compact_history", _compact_history)
+    registry.register("retrieve", _retrieve, schema={
+        "type": "function",
+        "function": {
+            "name": "retrieve",
+            "description": "从已导入的文献库中检索相关段落",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "检索查询文本"},
+                    "paper_ids": {"type": "array", "items": {"type": "string"}, "description": "限定搜索的论文 ID 列表"},
+                },
+                "required": ["query"],
+            },
+        },
+    })
+    registry.register("read_anchor", _read_anchor, schema={
+        "type": "function",
+        "function": {
+            "name": "read_anchor",
+            "description": "按锚点 ID 或论文 ID 读取文献内容",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "anchor_id": {"type": "string", "description": "锚点 ID"},
+                    "paper_id": {"type": "string", "description": "论文 ID"},
+                },
+            },
+        },
+    })
+    registry.register("compact_history", _compact_history, schema={
+        "type": "function",
+        "function": {
+            "name": "compact_history",
+            "description": "压缩对话历史，生成摘要以释放上下文空间",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "messages": {"type": "array", "items": {"type": "object"}, "description": "待压缩的消息列表"},
+                },
+            },
+        },
+    })
     return registry

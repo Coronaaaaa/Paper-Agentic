@@ -10,6 +10,7 @@ import pytest
 
 from app.agent_layer.contracts.query import AskRequest
 from app.agent_layer.orchestration.turn_runner import TurnRunner
+from app.agent_layer.orchestration.turn_params import SessionServices
 from app.agent_layer.planning.snapshot_builder import build_snapshot
 from app.agent_layer.planning.retrieval_gate import should_retrieve
 from app.agent_layer.response.source_mapper import map_sources
@@ -47,9 +48,11 @@ def _create_runner(fault_rate: float = 0.0) -> TurnRunner:
         retrieval_gate=should_retrieve,
         source_mapper=map_sources,
         block_streamer=stream_to_blocks,
-        window_store=ConversationWindowStore(max_messages=20),
-        editor_context_store=EditorContextStore(),
-        persistence=SessionPersistence(),
+        session=SessionServices(
+            window_store=ConversationWindowStore(max_messages=20),
+            editor_context_store=EditorContextStore(),
+            persistence=SessionPersistence(),
+        ),
     )
 
 

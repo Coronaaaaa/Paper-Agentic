@@ -45,6 +45,8 @@ docker compose up --build -d
 | 检索 | BM25 + Dense + RRF 融合（topk 由 TokenBudget 动态裁剪） |
 | PDF | MinerU API（唯一处理器） |
 | 配置 | BackendSettings + .env + /config/env API |
+| 认证 | API Key（可选，空值 = 不启用） |
+| 限流 | 内存滑动窗口（可选，默认不限） |
 | 部署 | Docker + Docker Compose |
 | CI | GitHub Actions（后端单元测试 + Docker 构建） |
 

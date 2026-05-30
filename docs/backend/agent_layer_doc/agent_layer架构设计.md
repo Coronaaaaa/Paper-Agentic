@@ -199,7 +199,8 @@ stateDiagram-v2
 agent_layer/
   orchestration/
     turn_runner.py        # 一轮请求编排
-    tool_loop.py          # ToolRegistry + execute_tool_loop()，最大 5 轮
+    turn_params.py        # RetrievalServices / SessionServices / TurnConfig 参数分组
+    tool_loop.py          # ToolRegistry + execute_tool_loop()，标准 ToolCalling API，最大 5 轮
   contracts/
     query.py              # AskRequest, FrozenTurnSnapshot
     sse_events.py         # SSE 事件定义
@@ -232,7 +233,7 @@ agent_layer/
 - `orchestration/turn_runner.py`
   - 只负责编排一轮请求，不直接写 API，不直接写底层索引查询。
 - `orchestration/tool_loop.py`
-  - ToolRegistry + execute_tool_loop()，最大 5 轮工具调用，含补检索、标题生成、compact 等。
+  - ToolRegistry + execute_tool_loop()，使用标准 OpenAI ToolCalling API（`chat_with_tools`），最大 5 轮工具调用，含补检索、标题生成、compact 等。
 - `contracts/sse_events.py`
   - 定义 SSE 事件结构：`thinking / block / sources / done / error`。
 - `contracts/content_block.py`

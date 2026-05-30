@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -31,7 +30,7 @@ class FrozenTurnSnapshot(BaseModel):
     model_name: str
     thinking_enabled: bool
     reflection_enabled: bool = False
-    recent_window: list[Any]
+    recent_window: list[dict]
     history_summary: str
     frozen_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     used_inputs: UsedInputs

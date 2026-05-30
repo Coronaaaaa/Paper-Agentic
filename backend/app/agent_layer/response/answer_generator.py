@@ -9,12 +9,20 @@ from __future__ import annotations
 import inspect
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 
 from app.agent_layer.response.source_mapper import map_sources
+from app.agent_layer.runtime.chat_model import ChatModel
 from app.data_layer.indexing.chroma_store.keyword_index import KeywordIndex
 from app.data_layer.indexing.chroma_store.vector_index import VectorIndex
+from app.data_layer.indexing.embedding.embedding_client import EmbeddingClient
 from app.data_layer.retrieval import fusion
+from app.service_layer.config.settings import BackendSettings
+
+
+class ConversationRepo(Protocol):
+    def get_messages(self, session_id: str, limit: int = 50) -> list: ...
+    def save_message(self, msg: Any) -> int: ...
 
 _SYSTEM_PROMPT = "你是一个有帮助的学术写作助手。请用中文回答用户的问题。"
 
@@ -22,12 +30,12 @@ _SYSTEM_PROMPT = "你是一个有帮助的学术写作助手。请用中文回�
 class AnswerGenerator:
     def __init__(
         self,
-        settings: Any,
-        chat_model: Any,
-        vector_store: Any,
-        keyword_search: Any,
-        conversation_repo: Any,
-        embedding_client: Any | None = None,
+        settings: BackendSettings,
+        chat_model: ChatModel,
+        vector_store: VectorIndex,
+        keyword_search: KeywordIndex,
+        conversation_repo: ConversationRepo,
+        embedding_client: EmbeddingClient | None = None,
     ) -> None:
         self._settings = settings
         self._chat_model = chat_model

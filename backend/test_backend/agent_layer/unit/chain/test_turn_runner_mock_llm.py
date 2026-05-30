@@ -66,6 +66,8 @@ def _parse_sse_frames(frames: list[str]) -> list[tuple[str, dict | str]]:
 
 @pytest.fixture
 def runner():
+    from app.agent_layer.orchestration.turn_params import SessionServices
+
     model = MockChatModel("根据研究[1]该方法有效[2]。")
     return TurnRunner(
         chat_model=model,
@@ -73,9 +75,11 @@ def runner():
         retrieval_gate=should_retrieve,
         source_mapper=map_sources,
         block_streamer=stream_to_blocks,
-        window_store=ConversationWindowStore(max_messages=20),
-        editor_context_store=EditorContextStore(),
-        persistence=SessionPersistence(),
+        session=SessionServices(
+            window_store=ConversationWindowStore(max_messages=20),
+            editor_context_store=EditorContextStore(),
+            persistence=SessionPersistence(),
+        ),
     )
 
 
